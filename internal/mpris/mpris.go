@@ -68,6 +68,7 @@ type Snapshot struct {
 	Title    string
 	Artist   string
 	Album    string
+	ArtURL   string // file:// URI for cover art; empty when unavailable
 	Playing  bool
 	Position time.Duration
 	Duration time.Duration
@@ -413,6 +414,9 @@ func metadata(snap Snapshot) map[string]dbus.Variant {
 	if snap.Album != "" {
 		m["xesam:album"] = dbus.MakeVariant(snap.Album)
 	}
+	if snap.ArtURL != "" {
+		m["mpris:artUrl"] = dbus.MakeVariant(snap.ArtURL)
+	}
 	return m
 }
 
@@ -439,7 +443,8 @@ func metadataEqual(a, b *Snapshot) bool {
 		return a == b
 	}
 	return a.VideoID == b.VideoID && a.Title == b.Title &&
-		a.Artist == b.Artist && a.Album == b.Album && a.Duration == b.Duration
+		a.Artist == b.Artist && a.Album == b.Album && a.ArtURL == b.ArtURL &&
+		a.Duration == b.Duration
 }
 
 func clampUnit(v float64) float64 {

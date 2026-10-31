@@ -177,7 +177,8 @@ every start. Stream URLs and metadata live in the bbolt state DB.
 ### MPRIS & radio
 
 Media keys, `playerctl`, and desktop media widgets are supported via MPRIS
-(`org.mpris.MediaPlayer2.ytm`). When the queue ends, playback continues
+(`org.mpris.MediaPlayer2.ytm`), including `mpris:artUrl` cover art for status
+bars such as Noctalia/QuickShell. When the queue ends, playback continues
 automatically with YouTube Music's radio/mix for the last track.
 
 ## What changed vs. upstream

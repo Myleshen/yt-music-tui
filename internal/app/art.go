@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -98,6 +99,13 @@ type artResultMsg struct {
 	width    int
 	rendered string
 	err      error
+}
+
+// artFileMsg reports a cached cover-art file for MPRIS clients.
+type artFileMsg struct {
+	videoID string
+	path    string
+	err     error
 }
 
 // lh3SizeParams matches Google's lh3 thumbnail size directives, e.g.
@@ -188,16 +196,16 @@ func fetchAndRenderArt(t ytmusic.Track, width int) (string, error) {
 	return renderArt(img, width), nil
 }
 
-// loadArtBytes returns the raw image for videoID, reading the on-disk cache
-// when present and otherwise downloading (and persisting) it. Candidate URLs
-// are tried in order, so a 404 on a higher-resolution source falls through to
-// the next; the last error is returned if every candidate fails.
-func loadArtBytes(videoID string, urls []string) ([]byte, error) {
+// loadArtFile returns the on-disk cache path for videoID's image, reading the
+// cache when present and otherwise downloading (and persisting) it. Candidate
+// URLs are tried in order, so a 404 on a higher-resolution source falls through
+// to the next; the last error is returned if every candidate fails.
+func loadArtFile(videoID string, urls []string) (string, error) {
 	var lastErr error
 	for _, url := range urls {
 		path := artCachePath(videoID, url)
 		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-			return data, nil
+			return path, nil
 		}
 		data, err := downloadArt(url)
 		if err != nil {
@@ -205,14 +213,55 @@ func loadArtBytes(videoID string, urls []string) ([]byte, error) {
 			continue
 		}
 		if err := persistArt(path, data); err != nil {
-			slog.Debug("art: disk cache write failed", "err", err)
+			// Without a file there is nothing to hand to MPRIS clients, so
+			// treat a failed write as a failed candidate.
+			lastErr = err
+			continue
 		}
-		return data, nil
+		return path, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no art URLs")
 	}
-	return nil, lastErr
+	return "", lastErr
+}
+
+// loadArtBytes returns the raw image for videoID. See loadArtFile.
+func loadArtBytes(videoID string, urls []string) ([]byte, error) {
+	path, err := loadArtFile(videoID, urls)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read cached art: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty cached art")
+	}
+	return data, nil
+}
+
+// artFileForTrack resolves a track's cover image to a cached file, downloading
+// it when needed. Unlike fetchAndRenderArt it does not depend on the terminal
+// width, so MPRIS clients can show artwork even in a narrow TUI.
+func artFileForTrack(t ytmusic.Track) (string, error) {
+	if t.VideoID == "" {
+		return "", fmt.Errorf("no video ID")
+	}
+	urls := artURLs(t)
+	if len(urls) == 0 {
+		return "", fmt.Errorf("no art URL")
+	}
+	return loadArtFile(t.VideoID, urls)
+}
+
+// artFileURL converts a cached art path into the file:// URI MPRIS expects.
+func artFileURL(path string) string {
+	if path == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 // downloadArt fetches a single image URL, bounded by a 16MB read limit.

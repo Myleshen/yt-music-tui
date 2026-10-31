@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseProfileRef(t *testing.T) {
 	tests := []struct {
@@ -73,5 +77,38 @@ func TestIsConfigured_readsAuthFile(t *testing.T) {
 	}
 	if c, _ := Cookie(); c != "SAPISID=xyz" {
 		t.Errorf("Cookie after update = %q", c)
+	}
+}
+
+func TestFirefoxProfileDBs_XDGLibreWolf(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	write := func(rel string) string {
+		path := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("db"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	lw := write(".config/librewolf/librewolf/abc.default-release/cookies.sqlite")
+	ff := write(".config/mozilla/firefox/xyz.default-release/cookies.sqlite")
+
+	got := map[string]firefoxProfileDB{}
+	for _, db := range firefoxProfileDBs() {
+		got[db.path] = db
+	}
+	if db, ok := got[lw]; !ok {
+		t.Errorf("XDG LibreWolf profile not found in %v", got)
+	} else if db.browser != "librewolf" || db.profile != "abc.default-release" {
+		t.Errorf("LibreWolf db = %+v", db)
+	}
+	if db, ok := got[ff]; !ok {
+		t.Errorf("XDG Firefox profile not found in %v", got)
+	} else if db.browser != "firefox" || db.profile != "xyz.default-release" {
+		t.Errorf("Firefox db = %+v", db)
 	}
 }

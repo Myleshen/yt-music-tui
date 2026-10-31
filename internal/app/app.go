@@ -330,6 +330,11 @@ type Model struct {
 	artCache   map[string]string
 	artLoading string // videoID whose art is currently being fetched
 
+	// Cover art for MPRIS clients (bar widgets, media popups). This is kept
+	// separate from artCache because it does not depend on terminal width.
+	coverArtPath    string
+	coverArtVideoID string
+
 	// Lyrics overlay
 	showLyrics    bool
 	lyrics        []lyricLine
@@ -748,6 +753,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.artCache[artKey(msg.videoID, msg.width)] = msg.rendered
 		}
+
+	case artFileMsg:
+		if msg.err != nil {
+			slog.Debug("cover art fetch failed", "videoID", msg.videoID, "err", msg.err)
+			break
+		}
+		if t, ok := m.currentTrack(); !ok || t.VideoID != msg.videoID {
+			break // a newer track superseded this fetch
+		}
+		m.coverArtPath = msg.path
+		m.coverArtVideoID = msg.videoID
+		m.updateMPRIS()
 
 	case lyricsMsg:
 		if m.lyricsVideoID != msg.videoID {
@@ -2196,6 +2213,9 @@ func (m *Model) updateMPRIS() {
 		snap.Title = t.Title
 		snap.Artist = t.Artist
 		snap.Album = t.Album
+		if m.coverArtPath != "" && m.coverArtVideoID == t.VideoID {
+			snap.ArtURL = artFileURL(m.coverArtPath)
+		}
 	}
 	if m.queue != nil {
 		snap.CanNext = m.queue.HasNext()
@@ -2343,6 +2363,15 @@ func (m *Model) onTrackChanged() []tea.Cmd {
 	if cmd := m.albumArtCmd(t); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
+	// The previous track's cover must not leak into the media widget while the
+	// new one downloads.
+	if m.coverArtVideoID != t.VideoID {
+		m.coverArtPath = ""
+		m.coverArtVideoID = t.VideoID
+	}
+	if cmd := m.coverArtCmd(t); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 
 	// Reset the lyrics view for the new track (the memory cache persists, so
 	// switching back to a previously seen track is instant).
@@ -2384,6 +2413,22 @@ func (m Model) albumArtCmd(t ytmusic.Track) tea.Cmd {
 	return func() tea.Msg {
 		rendered, err := fetchAndRenderArt(t, width)
 		return artResultMsg{videoID: t.VideoID, width: width, rendered: rendered, err: err}
+	}
+}
+
+// coverArtCmd returns a command that makes the track's cover image available
+// on disk for MPRIS clients. It runs even when the terminal is too narrow to
+// render art in the TUI.
+func (m Model) coverArtCmd(t ytmusic.Track) tea.Cmd {
+	if m.mpris == nil || t.VideoID == "" {
+		return nil
+	}
+	if m.coverArtVideoID == t.VideoID && m.coverArtPath != "" {
+		return nil
+	}
+	return func() tea.Msg {
+		path, err := artFileForTrack(t)
+		return artFileMsg{videoID: t.VideoID, path: path, err: err}
 	}
 }
 

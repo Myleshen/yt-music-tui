@@ -19,6 +19,7 @@ import (
 
 	"github.com/browserutils/kooky"
 	_ "github.com/browserutils/kooky/browser/all" // register all cookie store finders
+	"github.com/browserutils/kooky/browser/firefox"
 )
 
 const appName = "ytmusic-tui"
@@ -239,6 +240,51 @@ func ListProfiles() []Profile {
 	return out
 }
 
+// firefoxProfileDB is a Firefox-family cookies.sqlite file discovered at a
+// path kooky does not scan (XDG config roots, LibreWolf).
+type firefoxProfileDB struct {
+	browser string
+	profile string
+	path    string
+}
+
+// firefoxProfileDBs finds Firefox and LibreWolf cookie databases in both the
+// legacy home-directory layout and the XDG config layout used by current
+// releases. kooky's built-in finder only covers ~/.mozilla/firefox and
+// ~/.librewolf, so profiles under ~/.config are missed without this.
+func firefoxProfileDBs() []firefoxProfileDB {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	patterns := []struct {
+		browser string
+		root    string
+	}{
+		{"firefox", filepath.Join(home, ".mozilla", "firefox")},
+		{"firefox", filepath.Join(home, ".config", "mozilla", "firefox")},
+		{"librewolf", filepath.Join(home, ".librewolf")},
+		{"librewolf", filepath.Join(home, ".config", "librewolf", "librewolf")},
+	}
+	var out []firefoxProfileDB
+	seen := map[string]bool{}
+	for _, p := range patterns {
+		matches, _ := filepath.Glob(filepath.Join(p.root, "*", "cookies.sqlite"))
+		for _, path := range matches {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, firefoxProfileDB{
+				browser: p.browser,
+				profile: filepath.Base(filepath.Dir(path)),
+				path:    path,
+			})
+		}
+	}
+	return out
+}
+
 // collectCookieGroups traverses installed browsers (optionally restricted to
 // one browser name) and groups YouTube/Google cookies by browser profile.
 func collectCookieGroups(browser string) (map[groupKey]map[string]string, []groupKey) {
@@ -271,6 +317,20 @@ func collectCookieGroups(browser string) (map[groupKey]map[string]string, []grou
 			continue
 		}
 		add(groupKey{b, profile}, c)
+	}
+
+	// Scan the XDG/LibreWolf roots kooky misses. Cookies are keyed by profile
+	// here because firefox.TraverseCookies leaves Browser unset.
+	for _, db := range firefoxProfileDBs() {
+		if browser != "" && !strings.EqualFold(browser, db.browser) {
+			continue
+		}
+		for c, cErr := range firefox.TraverseCookies(db.path, kooky.Valid) {
+			if cErr != nil || c == nil {
+				continue
+			}
+			add(groupKey{db.browser, db.profile}, c)
+		}
 	}
 	return groups, order
 }

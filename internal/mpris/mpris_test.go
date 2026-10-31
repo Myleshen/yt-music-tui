@@ -37,6 +37,7 @@ func TestMetadataShape(t *testing.T) {
 		Title:    "Song",
 		Artist:   "Artist",
 		Album:    "Album",
+		ArtURL:   "file:///home/u/.config/ytmusic-tui/art/v2/art.jpg",
 		Duration: 65 * time.Second,
 	})
 	if got, _ := m["xesam:title"].Value().(string); got != "Song - Artist" {
@@ -47,6 +48,9 @@ func TestMetadataShape(t *testing.T) {
 	}
 	if got, _ := m["xesam:artist"].Value().([]string); len(got) != 1 || got[0] != "Artist" {
 		t.Errorf("artist = %v", got)
+	}
+	if got, _ := m["mpris:artUrl"].Value().(string); got != "file:///home/u/.config/ytmusic-tui/art/v2/art.jpg" {
+		t.Errorf("artUrl = %q", got)
 	}
 
 	// Without a track the NoTrack sentinel is used.
@@ -65,6 +69,10 @@ func TestMetadataEqual(t *testing.T) {
 	b.Title = "Other"
 	if metadataEqual(a, b) {
 		t.Error("different titles should not compare equal")
+	}
+	b = &Snapshot{VideoID: "v", Title: "T", Artist: "A", Duration: time.Second, ArtURL: "file:///art.jpg"}
+	if metadataEqual(a, b) {
+		t.Error("different artwork should not compare equal")
 	}
 }
 

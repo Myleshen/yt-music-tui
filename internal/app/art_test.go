@@ -3,6 +3,9 @@ package app
 import (
 	"image"
 	"image/color"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -215,5 +218,62 @@ func TestArtCachePath_KeyedByURLAndVersion(t *testing.T) {
 	}
 	if filepath.Base(filepath.Dir(a)) != artCacheVersion {
 		t.Errorf("cache path should live under %q: %q", artCacheVersion, a)
+	}
+}
+
+func TestArtFileForTrack_CachesImage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake-jpeg-bytes"))
+	}))
+	// Close before the second lookup to prove it is served from disk.
+	defer srv.Close()
+
+	track := ytmusic.Track{VideoID: "vid", Thumbnail: srv.URL}
+	path, err := artFileForTrack(track)
+	if err != nil {
+		t.Fatalf("artFileForTrack: %v", err)
+	}
+	if !strings.HasPrefix(path, home) {
+		t.Errorf("art path %q should live under HOME %q", path, home)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cached art: %v", err)
+	}
+	if string(data) != "fake-jpeg-bytes" {
+		t.Errorf("cached bytes = %q", data)
+	}
+
+	srv.Close()
+	again, err := artFileForTrack(track)
+	if err != nil {
+		t.Fatalf("cached artFileForTrack: %v", err)
+	}
+	if again != path {
+		t.Errorf("cache hit path = %q, want %q", again, path)
+	}
+}
+
+func TestArtFileForTrack_NoArt(t *testing.T) {
+	if _, err := artFileForTrack(ytmusic.Track{VideoID: "vid"}); err == nil {
+		t.Error("track without a thumbnail should fail")
+	}
+	if _, err := artFileForTrack(ytmusic.Track{}); err == nil {
+		t.Error("track without a video ID should fail")
+	}
+}
+
+func TestArtFileURL(t *testing.T) {
+	if got := artFileURL(""); got != "" {
+		t.Errorf("empty path = %q, want empty", got)
+	}
+	got := artFileURL("/home/u/My Music/art.jpg")
+	want := "file:///home/u/My%20Music/art.jpg"
+	if got != want {
+		t.Errorf("artFileURL = %q, want %q", got, want)
 	}
 }
