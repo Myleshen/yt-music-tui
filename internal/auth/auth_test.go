@@ -112,3 +112,38 @@ func TestFirefoxProfileDBs_XDGLibreWolf(t *testing.T) {
 		t.Errorf("Firefox db = %+v", db)
 	}
 }
+
+// TestFirefoxProfileDBs_MacLayout covers the ~/Library/Application Support
+// layout, which is the only one Zen uses.
+func TestFirefoxProfileDBs_MacLayout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	write := func(rel string) string {
+		path := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("db"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	zen := write("Library/Application Support/zen/Profiles/h6jee2w6.Default (release)/cookies.sqlite")
+	ff := write("Library/Application Support/Firefox/Profiles/abc.default-release/cookies.sqlite")
+
+	got := map[string]firefoxProfileDB{}
+	for _, db := range firefoxProfileDBs() {
+		got[db.path] = db
+	}
+	if db, ok := got[zen]; !ok {
+		t.Errorf("Zen profile not found in %v", got)
+	} else if db.browser != "zen" || db.profile != "h6jee2w6.Default (release)" {
+		t.Errorf("Zen db = %+v", db)
+	}
+	if db, ok := got[ff]; !ok {
+		t.Errorf("macOS Firefox profile not found in %v", got)
+	} else if db.browser != "firefox" || db.profile != "abc.default-release" {
+		t.Errorf("macOS Firefox db = %+v", db)
+	}
+}

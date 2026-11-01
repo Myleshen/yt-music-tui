@@ -3,15 +3,16 @@ package discordrpc
 import (
 	"encoding/json"
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Myleshen/yt-music-tui/internal/testutil"
 )
 
 // TestClientHandshakeAndActivity drives the client against a fake Discord IPC
 // socket and asserts the handshake then a SET_ACTIVITY frame on the wire.
 func TestClientHandshakeAndActivity(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "discord-ipc-0")
+	path := testutil.SockPath(t, "discord-ipc-0")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

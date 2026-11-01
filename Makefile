@@ -1,8 +1,13 @@
-.PHONY: build release run auth test fmt vet clean cross macos
+.PHONY: build release run auth test fmt vet clean cross macos install uninstall
 
 BIN := ytm
 BUILD_DIR := build
 VERSION ?= 0.1.0
+# Where `make install` puts things on macOS. The bundle goes into /Applications
+# because media keys and Now Playing only work for registered applications; the
+# terminal command is a symlink next to Homebrew's other binaries.
+INSTALL_APP ?= /Applications
+INSTALL_BIN ?= $(shell brew --prefix 2>/dev/null || echo /usr/local)/bin
 
 build:
 	go build -o $(BUILD_DIR)/$(BIN) ./cmd/ytm
@@ -50,6 +55,22 @@ macos:
 	cp packaging/darwin/Info.plist $(BUILD_DIR)/ytm.app/Contents/Info.plist
 	@echo "built $(BUILD_DIR)/ytm.app"
 	@echo "run it with: $(BUILD_DIR)/ytm.app/Contents/MacOS/$(BIN)"
+
+# install builds the bundle, ad-hoc signs it (arm64 refuses to run a binary with
+# no signature at all), copies it to /Applications and symlinks `ytm` onto PATH.
+install: macos
+	codesign --force --sign - $(BUILD_DIR)/ytm.app
+	rm -rf "$(INSTALL_APP)/ytm.app"
+	cp -R $(BUILD_DIR)/ytm.app "$(INSTALL_APP)/ytm.app"
+	mkdir -p "$(INSTALL_BIN)"
+	ln -sf "$(INSTALL_APP)/ytm.app/Contents/MacOS/$(BIN)" "$(INSTALL_BIN)/$(BIN)"
+	@echo "installed $(INSTALL_APP)/ytm.app"
+	@echo "run it from any terminal with: $(BIN)"
+
+uninstall:
+	rm -rf "$(INSTALL_APP)/ytm.app"
+	rm -f "$(INSTALL_BIN)/$(BIN)"
+	@echo "removed $(INSTALL_APP)/ytm.app and $(INSTALL_BIN)/$(BIN)"
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -179,12 +179,23 @@ func (s *darwinService) load() error {
 		return fmt.Errorf("mediactl: MPNowPlayingInfoCenter is unavailable")
 	}
 
-	purego.RegisterLibFunc(&s.dispatchAsync, libSystem, "dispatch_async")
-	var mainQueue func() uintptr
-	purego.RegisterLibFunc(&mainQueue, libSystem, "dispatch_get_main_queue")
-	s.mainQueue = mainQueue()
-	purego.RegisterLibFunc(&s.runLoopGetMain, coreFoundation, "CFRunLoopGetMain")
-	purego.RegisterLibFunc(&s.runLoopStop, coreFoundation, "CFRunLoopStop")
+	// dispatch_get_main_queue() is a macro for &_dispatch_main_q on macOS, not
+	// an exported function, so dlsym only finds the queue object itself. Its
+	// address is the dispatch_queue_t the async calls need.
+	mainQueue, err := purego.Dlsym(libSystem, "_dispatch_main_q")
+	if err != nil {
+		return fmt.Errorf("mediactl: resolve main queue: %w", err)
+	}
+	s.mainQueue = mainQueue
+	if err := resolveFunc(libSystem, "dispatch_async", &s.dispatchAsync); err != nil {
+		return fmt.Errorf("mediactl: resolve dispatch_async: %w", err)
+	}
+	if err := resolveFunc(coreFoundation, "CFRunLoopGetMain", &s.runLoopGetMain); err != nil {
+		return fmt.Errorf("mediactl: resolve CFRunLoopGetMain: %w", err)
+	}
+	if err := resolveFunc(coreFoundation, "CFRunLoopStop", &s.runLoopStop); err != nil {
+		return fmt.Errorf("mediactl: resolve CFRunLoopStop: %w", err)
+	}
 
 	s.keys = resolveNowPlayingKeys(mediaPlayer)
 	// One block per purpose, kept alive for the life of the process: creating a
@@ -220,6 +231,18 @@ func resolveNowPlayingKeys(lib uintptr) nowPlayingKeys {
 		elapsed:  lookup("MPNowPlayingInfoPropertyElapsedPlaybackTime", "elapsedPlaybackTime"),
 		rate:     lookup("MPNowPlayingInfoPropertyPlaybackRate", "playbackRate"),
 	}
+}
+
+// resolveFunc binds the C function named symbol to fnptr. A missing symbol is
+// reported as an error; purego.RegisterLibFunc panics instead, which would take
+// the TUI down on a Mac where a framework entry point has been renamed.
+func resolveFunc(lib uintptr, symbol string, fnptr any) error {
+	addr, err := purego.Dlsym(lib, symbol)
+	if err != nil {
+		return err
+	}
+	purego.RegisterFunc(fnptr, addr)
+	return nil
 }
 
 // --- Service --------------------------------------------------------------

@@ -248,14 +248,21 @@ type firefoxProfileDB struct {
 	path    string
 }
 
-// firefoxProfileDBs finds Firefox and LibreWolf cookie databases in both the
-// legacy home-directory layout and the XDG config layout used by current
-// releases. kooky's built-in finder only covers ~/.mozilla/firefox and
-// ~/.librewolf, so profiles under ~/.config are missed without this.
+// firefoxProfileDBs finds Firefox, LibreWolf and Zen cookie databases in the
+// legacy home-directory layout, the XDG config layout used by current Linux
+// releases, and the ~/Library/Application Support layout used on macOS.
+// kooky's built-in finder only covers ~/.mozilla/firefox and ~/.librewolf, so
+// profiles under ~/.config and every macOS profile (including all of Zen's)
+// are missed without this.
 func firefoxProfileDBs() []firefoxProfileDB {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
+	}
+	// Firefox-family browsers keep profiles under
+	// ~/Library/Application Support/<App>/Profiles on macOS.
+	macRoot := func(app string) string {
+		return filepath.Join(home, "Library", "Application Support", app, "Profiles")
 	}
 	patterns := []struct {
 		browser string
@@ -265,6 +272,9 @@ func firefoxProfileDBs() []firefoxProfileDB {
 		{"firefox", filepath.Join(home, ".config", "mozilla", "firefox")},
 		{"librewolf", filepath.Join(home, ".librewolf")},
 		{"librewolf", filepath.Join(home, ".config", "librewolf", "librewolf")},
+		{"firefox", macRoot("Firefox")},
+		{"librewolf", macRoot("librewolf")},
+		{"zen", macRoot("zen")},
 	}
 	var out []firefoxProfileDB
 	seen := map[string]bool{}

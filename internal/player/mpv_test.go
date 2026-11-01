@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Myleshen/yt-music-tui/internal/testutil"
 )
 
 // TestPositionResetOnFileChange verifies that the cached position/duration are
@@ -73,7 +75,7 @@ type fakeIPC struct {
 
 func newFakeIPC(t *testing.T) *fakeIPC {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "mpv.sock")
+	path := testutil.SockPath(t, "mpv.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -322,7 +324,7 @@ func TestGetStateIsCachedAndUpdates(t *testing.T) {
 
 	// Isolate the IPC socket for this test.
 	origSock := sockPath
-	sockPath = filepath.Join(t.TempDir(), "ytm-test-mpv.sock")
+	sockPath = testutil.SockPath(t, "ytm-test-mpv.sock")
 	defer func() { sockPath = origSock }()
 
 	// Generate a short local tone with ffmpeg when available; otherwise run mpv

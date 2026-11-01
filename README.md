@@ -46,12 +46,15 @@ No Python, no browser extension, no API keys.
 On macOS, `ytm` talks to `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter`
 instead of MPRIS, so the media keys, Control Center, and AirPods/Bluetooth
 controls work. macOS only gives those to processes it recognises as apps, so
-build the bundle with `make macos` and run the binary inside it:
+install the bundle instead of running a bare binary:
 
 ```sh
-make macos
-build/ytm.app/Contents/MacOS/ytm
+make install          # builds, ad-hoc signs, copies to /Applications, links `ytm`
+ytm                   # thereafter just this, from any terminal
 ```
+
+`make uninstall` removes both the bundle and the link. For a throwaway build
+without installing, `make macos` leaves it at `build/ytm.app`.
 
 A plain `go build` still plays music; it just may not receive media keys.
 
@@ -101,6 +104,7 @@ cd yt-music-tui
 make build            # -> ./build/ytm
 # on macOS, build the .app bundle that media keys need:
 make macos            # -> ./build/ytm.app
+make install          # -> /Applications/ytm.app + `ytm` on PATH
 # or cross-compile linux/darwin/windows standalone binaries:
 make cross
 ```
