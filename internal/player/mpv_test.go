@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -404,6 +405,23 @@ func TestGetStateIsCachedAndUpdates(t *testing.T) {
 	}
 	if m.IsAlive() {
 		t.Errorf("mpv still reported alive after Quit")
+	}
+}
+
+// TestDefaultSockPath checks that the IPC socket is per-user and per-process:
+// a fixed /tmp path let a second instance (or another user) delete and steal the
+// first one's mpv.
+func TestDefaultSockPath(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "run"))
+	got := defaultSockPath()
+	want := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), fmt.Sprintf("ytm-mpv-%d.sock", os.Getpid()))
+	if got != want {
+		t.Errorf("defaultSockPath() = %q, want %q", got, want)
+	}
+
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if got, want := defaultSockPath(), filepath.Join(os.TempDir(), fmt.Sprintf("ytm-mpv-%d.sock", os.Getpid())); got != want {
+		t.Errorf("defaultSockPath() without XDG_RUNTIME_DIR = %q, want %q", got, want)
 	}
 }
 

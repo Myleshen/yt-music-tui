@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Myleshen/yt-music-tui/internal/mpris"
+	"github.com/Myleshen/yt-music-tui/internal/mediactl"
 	"github.com/Myleshen/yt-music-tui/internal/player"
 	"github.com/Myleshen/yt-music-tui/internal/ytmusic"
 )
@@ -160,11 +160,11 @@ func TestHandleMPRISCommand_shuffle(t *testing.T) {
 	q := player.NewQueue(mkTracks(4), 0)
 	m := Model{queue: q}
 
-	m.handleMPRISCommand(mpris.Command{Action: mpris.ActionSetShuffle, Shuffle: true})
+	m.handleMPRISCommand(mediactl.Command{Action: mediactl.ActionSetShuffle, Shuffle: true})
 	if !q.Shuffled() {
 		t.Error("MPRIS SetShuffle(true) did not enable shuffle")
 	}
-	m.handleMPRISCommand(mpris.Command{Action: mpris.ActionSetShuffle, Shuffle: false})
+	m.handleMPRISCommand(mediactl.Command{Action: mediactl.ActionSetShuffle, Shuffle: false})
 	if q.Shuffled() {
 		t.Error("MPRIS SetShuffle(false) did not disable shuffle")
 	}
@@ -173,7 +173,7 @@ func TestHandleMPRISCommand_shuffle(t *testing.T) {
 func TestHandleMPRISCommand_nextWithoutMPV(t *testing.T) {
 	// Next with no player/queue must be a safe no-op.
 	m := Model{}
-	if cmds := m.handleMPRISCommand(mpris.Command{Action: mpris.ActionNext}); len(cmds) != 0 {
+	if cmds := m.handleMPRISCommand(mediactl.Command{Action: mediactl.ActionNext}); len(cmds) != 0 {
 		t.Errorf("Next without a queue returned %d cmds, want 0", len(cmds))
 	}
 }

@@ -1,4 +1,4 @@
-.PHONY: build release run auth test fmt vet clean cross
+.PHONY: build release run auth test fmt vet clean cross macos
 
 BIN := ytm
 BUILD_DIR := build
@@ -37,6 +37,19 @@ cross:
 
 deps:
 	go mod tidy
+
+# macos builds ytm into a minimal .app bundle. Media keys and the Now Playing
+# widget only reach processes the system recognises as applications, which means
+# a bundle with a CFBundleIdentifier — see packaging/darwin/Info.plist.
+macos:
+	rm -rf $(BUILD_DIR)/ytm.app
+	mkdir -p $(BUILD_DIR)/ytm.app/Contents/MacOS
+	CGO_ENABLED=0 GOOS=darwin go build -trimpath \
+		-ldflags "-s -w -X main.version=$(VERSION)" \
+		-o $(BUILD_DIR)/ytm.app/Contents/MacOS/$(BIN) ./cmd/ytm
+	cp packaging/darwin/Info.plist $(BUILD_DIR)/ytm.app/Contents/Info.plist
+	@echo "built $(BUILD_DIR)/ytm.app"
+	@echo "run it with: $(BUILD_DIR)/ytm.app/Contents/MacOS/$(BIN)"
 
 clean:
 	rm -rf $(BUILD_DIR)

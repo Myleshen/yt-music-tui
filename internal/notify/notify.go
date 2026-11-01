@@ -1,87 +1,34 @@
 // Package notify sends best-effort desktop notifications.
 //
-// It prefers the notify-send(1) helper when it is on PATH and otherwise falls
-// back to the freedesktop.org D-Bus notification API, so it works on minimal
-// systems without libnotify. Every failure is returned as an error and is never
-// fatal: notifications are a convenience, not a correctness requirement.
+// Each platform has its own delivery mechanism — notify-send(1) or the
+// freedesktop.org D-Bus API on Linux, AppleScript (or terminal-notifier) on
+// macOS — and every failure is returned as an error. Notifications are a
+// convenience, never a correctness requirement, so callers only log the error.
 package notify
 
-import (
-	"context"
-	"fmt"
-	"os/exec"
-	"time"
-
-	"github.com/godbus/dbus/v5"
-)
+import "time"
 
 // timeout bounds a single notification attempt so a hung notifier can never
 // stall the caller.
 const timeout = 3 * time.Second
 
-// appName is the application name shown by the notification daemon.
+// appName is the application name shown by the notification service.
 const appName = "ytm"
-
-// icon is the freedesktop icon name used for notifications.
-const icon = "audio-x-generic"
 
 // Send delivers a desktop notification with the given summary and body. It
 // returns nil when the notification was handed off successfully (or, more
 // often, best-effort accepted); errors describe why nothing was shown.
 func Send(summary, body string) error {
-	var cliErr error
-	if path, err := exec.LookPath("notify-send"); err == nil {
-		cliErr = sendCLI(path, summary, body)
-		if cliErr == nil {
-			return nil
-		}
-	}
-	if err := sendDBus(summary, body); err != nil {
-		if cliErr != nil {
-			return fmt.Errorf("notify: notify-send failed (%v) and %w", cliErr, err)
-		}
-		return err
-	}
-	return nil
+	return sendPlatform(summary, body)
 }
 
-// sendCLI runs notify-send with a context deadline so a stalled helper cannot
-// block indefinitely.
-func sendCLI(path, summary, body string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "--app-name="+appName, "--icon="+icon, summary, body)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("notify: notify-send: %w", err)
-	}
-	return nil
+// Backend names the delivery mechanism this build uses.
+func Backend() string {
+	return backendPlatform()
 }
 
-// sendDBus delivers the notification through org.freedesktop.Notifications.
-func sendDBus(summary, body string) error {
-	conn, err := dbus.ConnectSessionBus()
-	if err != nil {
-		return fmt.Errorf("notify: connect session bus: %w", err)
-	}
-	defer conn.Close()
-
-	obj := conn.Object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	call := obj.CallWithContext(ctx, "org.freedesktop.Notifications.Notify", 0,
-		appName,    // app_name
-		uint32(0),  // replaces_id
-		icon,       // app_icon
-		summary,    // summary
-		body,       // body
-		[]string{}, // actions
-		map[string]dbus.Variant{
-			"desktop-entry": dbus.MakeVariant(appName),
-		}, // hints
-		int32(timeout/time.Millisecond), // expire_timeout (ms)
-	)
-	if call.Err != nil {
-		return fmt.Errorf("notify: dbus Notify: %w", call.Err)
-	}
-	return nil
+// Available reports whether notifications can be delivered on this platform,
+// without actually sending one. It is used by `ytm doctor`.
+func Available() error {
+	return availablePlatform()
 }

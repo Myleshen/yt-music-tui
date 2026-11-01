@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,24 @@ import (
 
 // sockPath is the unix socket mpv exposes its JSON IPC on. It is a var so tests
 // can point at an isolated path in a temp dir.
-var sockPath = "/tmp/ytm-mpv.sock"
+var sockPath = defaultSockPath()
+
+// defaultSockPath places the IPC socket in the per-user runtime directory when
+// one is configured, falling back to the system temp dir. The pid suffix keeps
+// concurrent ytm instances from sharing (and killing) each other's mpv, and
+// $TMPDIR is already per-user on macOS.
+func defaultSockPath() string {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, fmt.Sprintf("ytm-mpv-%d.sock", os.Getpid()))
+}
+
+// DisableMediaKeys asks mpv to leave the system media keys to ytm. It is set on
+// macOS when ytm's own now-playing backend is active; on other platforms mpv
+// has no media-key integration to disable, so the flag is not emitted.
+var DisableMediaKeys bool
 
 // requestTimeout bounds how long a caller waits for a single IPC response.
 const requestTimeout = 2 * time.Second
@@ -166,6 +184,7 @@ func startArgs(streamURL, title string, startPos float64, opts StartOptions) []s
 		"--input-ipc-server=" + sockPath,
 		"--really-quiet",
 	}
+	args = append(args, platformArgs()...)
 	args = append(args, opts.Args()...)
 	if title != "" {
 		// Surfaces through media-title, so MPRIS/media widgets and the TUI bar

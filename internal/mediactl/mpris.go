@@ -1,5 +1,7 @@
-// Package mpris exposes a minimal MPRIS (org.mpris.MediaPlayer2) D-Bus service
-// so media keys, playerctl, and desktop media widgets can control ytm.
+//go:build !darwin && !windows
+
+// MPRIS backend: a minimal org.mpris.MediaPlayer2 D-Bus service so media keys,
+// playerctl, and desktop media widgets can control ytm.
 //
 // The service lives on its own goroutine(s) owned by the dbus connection and
 // translates remote method calls into Commands pushed to the TUI through the
@@ -8,7 +10,8 @@
 // signals) are refreshed. Registration failures (no session bus, name already
 // taken) are reported as errors so the caller can log and carry on — MPRIS is
 // always optional and must never crash the player.
-package mpris
+
+package mediactl
 
 import (
 	"fmt"
@@ -32,56 +35,7 @@ const (
 	NoTrack = dbus.ObjectPath("/org/mpris/MediaPlayer2/TrackList/NoTrack")
 )
 
-// Action identifies a control request coming from the bus.
-type Action int
-
-const (
-	ActionPlay Action = iota
-	ActionPause
-	ActionPlayPause
-	ActionStop
-	ActionNext
-	ActionPrevious
-	ActionSeek
-	ActionSetPosition
-	ActionSetVolume
-	ActionSetShuffle
-	ActionSetLoop
-	ActionQuit
-)
-
-// Command is an MPRIS control request relayed to the TUI.
-type Command struct {
-	Action   Action
-	Offset   time.Duration // Seek: relative offset
-	Position time.Duration // SetPosition: absolute position
-	TrackID  string        // SetPosition: target track id
-	Volume   float64       // SetVolume: 0.0–1.0
-	Shuffle  bool          // SetShuffle
-	Loop     string        // SetLoop: None / Track / Playlist
-}
-
-// Snapshot is the playback state the TUI publishes to MPRIS.
-type Snapshot struct {
-	HasTrack bool
-	VideoID  string
-	Title    string
-	Artist   string
-	Album    string
-	ArtURL   string // file:// URI for cover art; empty when unavailable
-	Playing  bool
-	Position time.Duration
-	Duration time.Duration
-	Volume   float64 // 0.0–1.0
-	Shuffle  bool
-	Loop     bool
-	CanNext  bool
-	CanPrev  bool
-}
-
-// Service is a running MPRIS service. A nil *Service is safe to use: every
-// method no-ops, so callers can treat "MPRIS unavailable" uniformly.
-type Service struct {
+type dbusService struct {
 	conn   *dbus.Conn
 	owned  bool   // true when the connection is ours to close
 	name   string // registered bus name (released on Close)
@@ -94,15 +48,28 @@ type Service struct {
 	last *Snapshot
 }
 
+// Backend names the platform integration this build uses.
+func Backend() string { return "MPRIS (D-Bus session bus)" }
+
+// Probe checks that the session bus is reachable without registering the
+// service, so it is safe to call while another ytm instance is running.
+func Probe() error {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return fmt.Errorf("mediactl: connect session bus: %w", err)
+	}
+	return conn.Close()
+}
+
 // New connects to the session bus and registers the MPRIS name and object.
 // It returns an error (rather than panicking) when no bus is available or the
 // name is already owned, letting the caller log and continue.
-func New() (*Service, error) {
+func New() (Service, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return nil, fmt.Errorf("mpris: connect session bus: %w", err)
+		return nil, fmt.Errorf("mediactl: connect session bus: %w", err)
 	}
-	s, err := NewWithConn(conn)
+	s, err := register(conn, BusName)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -113,43 +80,43 @@ func New() (*Service, error) {
 
 // NewWithConn registers the service on an already-connected bus. The caller
 // retains ownership of conn (Close will not close it).
-func NewWithConn(conn *dbus.Conn) (*Service, error) {
+func NewWithConn(conn *dbus.Conn) (Service, error) {
 	return register(conn, BusName)
 }
 
 // register performs the actual bus-name acquisition and object export. The
 // name is a parameter so tests can register under a unique name.
-func register(conn *dbus.Conn, name string) (*Service, error) {
+func register(conn *dbus.Conn, name string) (*dbusService, error) {
 	if conn == nil {
-		return nil, fmt.Errorf("mpris: nil connection")
+		return nil, fmt.Errorf("mediactl: nil connection")
 	}
 	reply, err := conn.RequestName(name, dbus.NameFlagDoNotQueue)
 	if err != nil {
-		return nil, fmt.Errorf("mpris: request name %s: %w", name, err)
+		return nil, fmt.Errorf("mediactl: request name %s: %w", name, err)
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner && reply != dbus.RequestNameReplyAlreadyOwner {
-		return nil, fmt.Errorf("mpris: name %s already owned by another process", name)
+		return nil, fmt.Errorf("mediactl: name %s already owned by another process", name)
 	}
 
-	s := &Service{conn: conn, name: name}
+	s := &dbusService{conn: conn, name: name}
 	s.root = &rootObject{svc: s}
 	s.player = &playerObject{svc: s}
 
 	props, err := prop.Export(conn, ObjectPath, propertyMap(s))
 	if err != nil {
 		_, _ = conn.ReleaseName(name)
-		return nil, fmt.Errorf("mpris: export properties: %w", err)
+		return nil, fmt.Errorf("mediactl: export properties: %w", err)
 	}
 	s.props = props
 
 	if err := conn.Export(s.root, ObjectPath, rootIface); err != nil {
 		_, _ = conn.ReleaseName(name)
-		return nil, fmt.Errorf("mpris: export root: %w", err)
+		return nil, fmt.Errorf("mediactl: export root: %w", err)
 	}
 	// SeekOffset is exported under its MPRIS name "Seek".
 	if err := conn.ExportWithMap(s.player, map[string]string{"SeekOffset": "Seek"}, ObjectPath, playerIface); err != nil {
 		_, _ = conn.ReleaseName(name)
-		return nil, fmt.Errorf("mpris: export player: %w", err)
+		return nil, fmt.Errorf("mediactl: export player: %w", err)
 	}
 	slog.Info("MPRIS registered", "name", name, "path", ObjectPath)
 	return s, nil
@@ -158,7 +125,7 @@ func register(conn *dbus.Conn, name string) (*Service, error) {
 // SetSend installs the callback used to relay control commands to the TUI. It
 // may be called after New (once the TUI program exists); commands that arrive
 // before it is set are dropped.
-func (s *Service) SetSend(send func(Command)) {
+func (s *dbusService) SetSend(send func(Command)) {
 	if s == nil {
 		return
 	}
@@ -167,7 +134,7 @@ func (s *Service) SetSend(send func(Command)) {
 	s.mu.Unlock()
 }
 
-func (s *Service) dispatch(cmd Command) {
+func (s *dbusService) dispatch(cmd Command) {
 	if s == nil {
 		return
 	}
@@ -181,7 +148,7 @@ func (s *Service) dispatch(cmd Command) {
 
 // Update publishes a fresh playback snapshot. It only touches properties whose
 // value actually changed so PropertiesChanged stays quiet for idle ticks.
-func (s *Service) Update(snap Snapshot) {
+func (s *dbusService) Update(snap Snapshot) {
 	if s == nil || s.props == nil {
 		return
 	}
@@ -231,7 +198,7 @@ func (s *Service) Update(snap Snapshot) {
 }
 
 // Close releases the bus name and (when owned) the connection.
-func (s *Service) Close() {
+func (s *dbusService) Close() {
 	if s == nil {
 		return
 	}
@@ -253,7 +220,7 @@ func (s *Service) Close() {
 
 // --- MPRIS method objects --------------------------------------------------
 
-type rootObject struct{ svc *Service }
+type rootObject struct{ svc *dbusService }
 
 // Raise is a no-op: ytm has no way to raise its terminal window.
 func (r *rootObject) Raise() *dbus.Error { return nil }
@@ -264,7 +231,7 @@ func (r *rootObject) Quit() *dbus.Error {
 	return nil
 }
 
-type playerObject struct{ svc *Service }
+type playerObject struct{ svc *dbusService }
 
 func (p *playerObject) Next() *dbus.Error {
 	p.svc.dispatch(Command{Action: ActionNext})
@@ -326,7 +293,7 @@ func noTrackMetadata() map[string]dbus.Variant {
 	}
 }
 
-func propertyMap(s *Service) prop.Map {
+func propertyMap(s *dbusService) prop.Map {
 	return prop.Map{
 		rootIface: {
 			"CanQuit":             {Value: false, Emit: prop.EmitConst},
@@ -436,23 +403,4 @@ func trackPath(videoID string) dbus.ObjectPath {
 		}
 	}
 	return dbus.ObjectPath("/org/mpris/MediaPlayer2/Track/" + b.String())
-}
-
-func metadataEqual(a, b *Snapshot) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.VideoID == b.VideoID && a.Title == b.Title &&
-		a.Artist == b.Artist && a.Album == b.Album && a.ArtURL == b.ArtURL &&
-		a.Duration == b.Duration
-}
-
-func clampUnit(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
 }

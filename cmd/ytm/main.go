@@ -15,8 +15,9 @@ import (
 	"github.com/Myleshen/yt-music-tui/internal/auth"
 	"github.com/Myleshen/yt-music-tui/internal/config"
 	"github.com/Myleshen/yt-music-tui/internal/discordrpc"
+	"github.com/Myleshen/yt-music-tui/internal/doctor"
 	"github.com/Myleshen/yt-music-tui/internal/logger"
-	"github.com/Myleshen/yt-music-tui/internal/mpris"
+	"github.com/Myleshen/yt-music-tui/internal/mediactl"
 	"github.com/Myleshen/yt-music-tui/internal/player"
 	"github.com/Myleshen/yt-music-tui/internal/store"
 	"github.com/Myleshen/yt-music-tui/internal/ytmusic"
@@ -33,6 +34,8 @@ func main() {
 		case "profiles":
 			runProfiles()
 			return
+		case "doctor":
+			os.Exit(runDoctor())
 		case "version", "--version", "-v":
 			fmt.Printf("ytm %s\n", version)
 			return
@@ -49,6 +52,7 @@ func usage() {
 
 Usage:
   ytm                 Launch the player
+  ytm doctor          Check dependencies and configuration
   ytm auth [flags]    Sign in using browser cookies
   ytm profiles        List browser profiles with YouTube cookies
   ytm version         Print version
@@ -135,6 +139,14 @@ func runProfiles() {
 		fmt.Printf("  %s\n", p.Label())
 	}
 	fmt.Println("\nPick one with:  ytm auth --browser <browser> --profile <profile>")
+}
+
+// runDoctor prints the environment report and returns the process exit code:
+// non-zero when a required dependency or credential is missing.
+func runDoctor() int {
+	report := doctor.Run(doctor.Options{Version: version})
+	fmt.Print(report)
+	return report.ExitCode()
 }
 
 func runTUI() {
@@ -241,16 +253,19 @@ func runTUI() {
 	}
 	slog.Info("ytmusic client ready", "authenticated", client.Authenticated())
 
-	// MPRIS is best-effort: when there is no session bus (or the name is taken)
+	// System media integration (MPRIS on Linux, MPNowPlayingInfoCenter on macOS)
+	// is best-effort: when the platform has no support, or the bus/name is taken,
 	// the player runs unchanged, just without media-key/OS control.
-	mprisSvc, mprisErr := mpris.New()
-	if mprisErr != nil {
-		slog.Warn("MPRIS unavailable; continuing without media-key support", "err", mprisErr)
-		mprisSvc = nil
+	mediaSvc, mediaErr := mediactl.New()
+	if mediaErr != nil {
+		slog.Warn("system media integration unavailable; continuing without media-key support", "err", mediaErr)
+		mediaSvc = nil
 	}
-	if mprisSvc != nil {
-		defer mprisSvc.Close()
+	if mediaSvc != nil {
+		defer mediaSvc.Close()
 	}
+	// When ytm drives the OS media keys itself, mpv must not also grab them.
+	player.DisableMediaKeys = mediaSvc != nil
 
 	// Discord Rich Presence is optional and off by default. It is entirely
 	// best-effort: without an app id (or without Discord running) the client
@@ -283,7 +298,7 @@ func runTUI() {
 		NormalizeAudio:      cfg.Playback.NormalizeAudio,
 		NotifyTrackChange:   cfg.UI.NotifyTrackChange,
 		Discord:             discord,
-	}, mprisSvc)
+	}, mediaSvc)
 
 	p := tea.NewProgram(
 		model,
@@ -291,14 +306,35 @@ func runTUI() {
 		tea.WithMouseCellMotion(),
 	)
 
-	// Route MPRIS control commands into the running TUI. Set after the program
+	// Route remote control commands into the running TUI. Set after the program
 	// is created so the send callback is available.
-	if mprisSvc != nil {
-		mprisSvc.SetSend(func(cmd mpris.Command) { p.Send(cmd) })
+	if mediaSvc != nil {
+		mediaSvc.SetSend(func(cmd mediactl.Command) { p.Send(cmd) })
 	}
 
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	runProgram := func() error {
+		_, err := p.Run()
+		return err
+	}
+
+	// Some backends need the process main thread for their event loop (macOS
+	// delivers media keys on the AppKit run loop). In that case the TUI runs on
+	// a separate goroutine and the main one is handed over.
+	var runErr error
+	if runner, ok := mediaSvc.(mediactl.Runner); ok {
+		done := make(chan struct{})
+		go func() {
+			runErr = runProgram()
+			runner.StopLoop()
+			close(done)
+		}()
+		runner.RunLoop()
+		<-done
+	} else {
+		runErr = runProgram()
+	}
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", runErr)
 		os.Exit(1)
 	}
 }

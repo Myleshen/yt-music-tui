@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.2.4
 	github.com/charmbracelet/lipgloss v1.0.0
+	github.com/ebitengine/purego v0.11.2
 	github.com/godbus/dbus/v5 v5.2.2
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/image v0.25.0

@@ -34,12 +34,73 @@ Playback uses `mpv` (with `yt-dlp` for stream extraction).
 
 No Python, no browser extension, no API keys.
 
+## Platform support
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| TUI + playback | ✅ | ✅ | buildable, untested |
+| Media keys / Now Playing | ✅ MPRIS | ✅ (see below) | — |
+| Desktop notifications | ✅ notify-send / D-Bus | ✅ AppleScript | — |
+| Browser sign-in | ✅ | ✅ | ✅ |
+
+On macOS, `ytm` talks to `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter`
+instead of MPRIS, so the media keys, Control Center, and AirPods/Bluetooth
+controls work. macOS only gives those to processes it recognises as apps, so
+build the bundle with `make macos` and run the binary inside it:
+
+```sh
+make macos
+build/ytm.app/Contents/MacOS/ytm
+```
+
+A plain `go build` still plays music; it just may not receive media keys.
+
+Two things worth knowing if the keys seem dead:
+
+- macOS arbitrates media keys between apps. If another player (Music, a browser
+  tab) holds them, press play/pause once in Control Center on the ytm entry, or
+  quit the other player; macOS then hands the keys to ytm.
+- Build for the Mac's own architecture (`make macos` on the machine itself). A
+  cross-compiled x86_64 binary runs under Rosetta and works, but the bundle
+  approach above is what the media services key off.
+
+## Check your setup
+
+```sh
+ytm doctor
+```
+
+prints what ytm found on this machine: the config file, the YouTube session in
+use, `mpv`/`yt-dlp` versions, whether media keys and notifications are
+available, and whether the config directory is writable. Nothing is sent and no
+OS resources are claimed, so it is safe to run while the player is running. It
+exits non-zero when a required piece is missing, which makes the output handy in
+a bug report.
+
+```text
+ytm doctor 0.1.0
+platform darwin/arm64 go1.26.0
+
+  [  ok] config         ~/.config/ytmusic-tui/config.toml
+  [  ok] credentials    live browser session (firefox)
+  [  ok] mpv            mpv 0.39.0 (/opt/homebrew/bin/mpv)
+  [  ok] yt-dlp         2025.06.09 (/opt/homebrew/bin/yt-dlp)
+  [  ok] media keys     MPNowPlayingInfoCenter (MediaPlayer)
+  [  ok] notifications  Notification Center (osascript)
+  [  ok] config dir     ~/.config/ytmusic-tui
+  [info] log            ~/.config/ytmusic-tui/ytm.log
+
+7 passed, 0 warnings, 0 failed
+```
+
 ## Build
 
 ```sh
 git clone https://github.com/Myleshen/yt-music-tui.git
 cd yt-music-tui
 make build            # -> ./build/ytm
+# on macOS, build the .app bundle that media keys need:
+make macos            # -> ./build/ytm.app
 # or cross-compile linux/darwin/windows standalone binaries:
 make cross
 ```
@@ -151,7 +212,9 @@ Recognised `[keys]` action names: `up`, `down`, `tab0`–`tab4`, `home`,
 Press `P` to start/stop. The countdown shows in the player bar
 (`🍅 24:59` / `☕ 04:30`) and cycles work → break → work. When a work phase
 ends, playback pauses and a desktop notification nudges you to stand up and
-move; when the break ends it notifies you to get back to work.
+move; when the break ends it notifies you to get back to work. Notifications go
+through `notify-send`/D-Bus on Linux and `osascript` (or `terminal-notifier`, if
+installed) on macOS.
 
 ### Cold start
 
@@ -175,12 +238,19 @@ disk first, hitting [LRCLIB](https://lrclib.net) only on a miss; the
 not-found case is cached too, so an instrumental track is not re-queried on
 every start. Stream URLs and metadata live in the bbolt state DB.
 
-### MPRIS & radio
+### MPRIS, Now Playing & radio
 
 Media keys, `playerctl`, and desktop media widgets are supported via MPRIS
 (`org.mpris.MediaPlayer2.ytm`), including `mpris:artUrl` cover art for status
-bars such as Noctalia/QuickShell. When the queue ends, playback continues
-automatically with YouTube Music's radio/mix for the last track.
+bars such as Noctalia/QuickShell. On macOS the equivalent is the system Now
+Playing surface: `MPNowPlayingInfoCenter` publishes title, artist, album, cover
+art and progress, and `MPRemoteCommandCenter` delivers play/pause, next,
+previous, stop and position changes from the media keys, Control Center, and
+Bluetooth/AirPods controls. mpv is started with `--input-media-keys=no` there so
+it does not compete for the same keys.
+
+When the queue ends, playback continues automatically with YouTube Music's
+radio/mix for the last track.
 
 ## What changed vs. upstream
 
@@ -207,7 +277,7 @@ internal/player       mpv JSON-IPC control + stream-URL cache
 internal/store        bbolt persistence (exact queue, URL cache, metadata)
 internal/playlistio   M3U/CSV export and import
 internal/stats        local listening-history aggregation
-internal/mpris        MPRIS D-Bus service (media keys / OS control)
+internal/mediactl     OS media integration (MPRIS on Linux, MediaPlayer on macOS)
 internal/pomodoro     work/break focus timer state machine
 internal/logger       file logging with credential redaction
 ```

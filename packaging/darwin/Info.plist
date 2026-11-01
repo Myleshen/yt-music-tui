@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Minimal app bundle for ytm.
+
+  macOS only routes media keys and the Now Playing widget to processes that look
+  like applications: MPRemoteCommandCenter events are delivered to the app that
+  owns the "now playing" session, and a bare CLI binary with no bundle
+  identifier is mostly ignored by the system media services. `make macos`
+  copies this file into build/ytm.app/Contents/Info.plist, which is what makes
+  the integration work.
+
+  LSUIElement keeps ytm out of the Dock and the app switcher.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>ytm</string>
+	<key>CFBundleDisplayName</key>
+	<string>ytm</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.myleshen.ytm</string>
+	<key>CFBundleExecutable</key>
+	<string>ytm</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

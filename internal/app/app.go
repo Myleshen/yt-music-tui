@@ -15,7 +15,7 @@ import (
 
 	"github.com/Myleshen/yt-music-tui/internal/config"
 	"github.com/Myleshen/yt-music-tui/internal/discordrpc"
-	"github.com/Myleshen/yt-music-tui/internal/mpris"
+	"github.com/Myleshen/yt-music-tui/internal/mediactl"
 	"github.com/Myleshen/yt-music-tui/internal/notify"
 	"github.com/Myleshen/yt-music-tui/internal/player"
 	"github.com/Myleshen/yt-music-tui/internal/pomodoro"
@@ -384,7 +384,7 @@ type Model struct {
 	tickCount   int                     // incremented each tick for periodic saves
 	cookiesFile string                  // Netscape cookies file handed to yt-dlp ("" = none)
 	prefetcher  *prefetcher             // serial background stream-URL warmer
-	mpris       *mpris.Service          // nil when MPRIS is unavailable (best-effort)
+	mpris       mediactl.Service        // OS media backend; nil when unavailable
 
 	// Pomodoro focus timer (driven by the existing tick; never blocks the UI).
 	pomodoro pomodoro.Timer
@@ -461,7 +461,7 @@ func (o Options) withDefaults() Options {
 }
 
 // New creates the initial Model.
-func New(ytClient *ytmusic.Client, st *store.Store, cache *player.URLCache, resume *store.LastPlayingState, cookiesFile string, opts Options, mp *mpris.Service) Model {
+func New(ytClient *ytmusic.Client, st *store.Store, cache *player.URLCache, resume *store.LastPlayingState, cookiesFile string, opts Options, mp mediactl.Service) Model {
 	opts = opts.withDefaults()
 	keys, unknown := buildKeyMap(opts.Keys)
 	if len(unknown) > 0 {
@@ -824,7 +824,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prefetchDoneMsg:
 		// no-op — cache was filled in background
 
-	case mpris.Command:
+	case mediactl.Command:
 		cmds = append(cmds, m.handleMPRISCommand(msg)...)
 
 	case statsMsg:
@@ -2118,56 +2118,56 @@ func (m *Model) appendRadio(tracks []ytmusic.Track) int {
 	return added
 }
 
-// handleMPRISCommand turns an MPRIS control command into TUI commands.
-func (m *Model) handleMPRISCommand(cmd mpris.Command) []tea.Cmd {
+// handleMPRISCommand turns a remote control command into TUI commands.
+func (m *Model) handleMPRISCommand(cmd mediactl.Command) []tea.Cmd {
 	var cmds []tea.Cmd
 	switch cmd.Action {
-	case mpris.ActionPlay:
+	case mediactl.ActionPlay:
 		if m.mpv != nil {
 			m.mpv.Play()
 		} else if m.resumeState != nil {
 			cmds = append(cmds, m.resumeCmd())
 		}
-	case mpris.ActionPause:
+	case mediactl.ActionPause:
 		if m.mpv != nil {
 			m.mpv.Pause()
 		}
-	case mpris.ActionPlayPause:
+	case mediactl.ActionPlayPause:
 		if m.mpv != nil {
 			m.mpv.PlayPause()
 		} else if m.resumeState != nil {
 			cmds = append(cmds, m.resumeCmd())
 		}
-	case mpris.ActionStop:
+	case mediactl.ActionStop:
 		if m.mpv != nil {
 			_ = m.mpv.Stop()
 		}
-	case mpris.ActionNext:
+	case mediactl.ActionNext:
 		if cmd := m.advanceQueueCmd(1); cmd != nil {
 			m.autoAdvancing = true
 			cmds = append(cmds, cmd)
 		}
-	case mpris.ActionPrevious:
+	case mediactl.ActionPrevious:
 		if cmd := m.advanceQueueCmd(-1); cmd != nil {
 			m.autoAdvancing = true
 			cmds = append(cmds, cmd)
 		}
-	case mpris.ActionSeek:
+	case mediactl.ActionSeek:
 		if m.mpv != nil {
 			_ = m.mpv.Seek(cmd.Offset.Seconds())
 		}
-	case mpris.ActionSetPosition:
+	case mediactl.ActionSetPosition:
 		if m.mpv != nil {
 			delta := cmd.Position.Seconds() - m.playerState.Position
 			_ = m.mpv.Seek(delta)
 		}
-	case mpris.ActionSetVolume:
+	case mediactl.ActionSetVolume:
 		if m.mpv != nil {
 			vol := int(cmd.Volume*100 + 0.5)
 			_ = m.mpv.SetVolume(vol)
 			cmds = append(cmds, m.showVolumeOSD(vol))
 		}
-	case mpris.ActionSetShuffle:
+	case mediactl.ActionSetShuffle:
 		if m.queue != nil {
 			m.queue.SetShuffle(cmd.Shuffle)
 			if cmd.Shuffle {
@@ -2176,12 +2176,12 @@ func (m *Model) handleMPRISCommand(cmd mpris.Command) []tea.Cmd {
 				cmds = append(cmds, m.showOSD("⇄  shuffle off"))
 			}
 		}
-	case mpris.ActionSetLoop:
+	case mediactl.ActionSetLoop:
 		if m.mpv != nil {
 			m.looping = cmd.Loop == "Track"
 			_ = m.mpv.SetLoop(m.looping)
 		}
-	case mpris.ActionQuit:
+	case mediactl.ActionQuit:
 		cmds = append(cmds, tea.Quit)
 	}
 	return cmds
@@ -2195,12 +2195,13 @@ func (m *Model) resumeCmd() tea.Cmd {
 	}
 }
 
-// updateMPRIS publishes the current playback snapshot to MPRIS (best-effort).
+// updateMPRIS publishes the current playback snapshot to the OS media
+// surface: MPRIS on Linux, the Now Playing widget on macOS (best-effort).
 func (m *Model) updateMPRIS() {
 	if m.mpris == nil {
 		return
 	}
-	snap := mpris.Snapshot{
+	snap := mediactl.Snapshot{
 		Playing:  m.playerState.Playing,
 		Position: time.Duration(m.playerState.Position * float64(time.Second)),
 		Duration: time.Duration(m.playerState.Duration * float64(time.Second)),
