@@ -192,7 +192,7 @@ func (p Profile) Label() string {
 	return p.Browser + " · " + p.Profile
 }
 
-// FromBrowser extracts YouTube/Google cookies from an installed browser and
+// FromBrowser extracts YouTube cookies from an installed browser and
 // returns a Cookie header. If browser is non-empty only that browser is used.
 func FromBrowser(browser string) (cookie string, usedBrowser string, err error) {
 	return FromBrowserProfile(browser, "")
@@ -238,6 +238,28 @@ func ListProfiles() []Profile {
 		out = append(out, Profile{Browser: k.browser, Profile: k.profile})
 	}
 	return out
+}
+
+// addCookie records c under k, keeping only YouTube-domain cookies.
+//
+// The Google-domain twins must not be mixed in. A browser sends .google.com
+// cookies to google.com and .youtube.com cookies to youtube.com; SID, HSID,
+// SSID and the whole __Secure-*PSID chain carry different values per domain.
+// Flattening both sets into one Cookie header (as this code used to) lets the
+// Google value shadow the YouTube one, and YouTube then treats the request as
+// signed out: the library answers "Sign in to listen to your liked tracks" and
+// liked songs come back empty. Verified live — dropping the Google cookies took
+// the same profile from 0 to 631 liked songs.
+func addCookie(groups map[groupKey]map[string]string, order *[]groupKey, k groupKey, c *kooky.Cookie) {
+	dom := strings.TrimPrefix(c.Domain, ".")
+	if !strings.HasSuffix(dom, "youtube.com") {
+		return
+	}
+	if groups[k] == nil {
+		groups[k] = map[string]string{}
+		*order = append(*order, k)
+	}
+	groups[k][c.Name] = c.Value
 }
 
 // firefoxProfileDB is a Firefox-family cookies.sqlite file discovered at a
@@ -296,22 +318,14 @@ func firefoxProfileDBs() []firefoxProfileDB {
 }
 
 // collectCookieGroups traverses installed browsers (optionally restricted to
-// one browser name) and groups YouTube/Google cookies by browser profile.
+// one browser name) and groups YouTube cookies by browser profile.
 func collectCookieGroups(browser string) (map[groupKey]map[string]string, []groupKey) {
 	ctx := context.Background()
 	groups := map[groupKey]map[string]string{}
 	var order []groupKey
 
 	add := func(k groupKey, c *kooky.Cookie) {
-		dom := strings.TrimPrefix(c.Domain, ".")
-		if !strings.HasSuffix(dom, "youtube.com") && !strings.HasSuffix(dom, "google.com") {
-			return
-		}
-		if groups[k] == nil {
-			groups[k] = map[string]string{}
-			order = append(order, k)
-		}
-		groups[k][c.Name] = c.Value
+		addCookie(groups, &order, k, c)
 	}
 
 	for c, cErr := range kooky.TraverseCookies(ctx, kooky.Valid) {

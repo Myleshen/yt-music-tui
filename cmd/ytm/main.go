@@ -325,6 +325,7 @@ func runTUI() {
 		done := make(chan struct{})
 		go func() {
 			runErr = runProgram()
+			slog.Debug("tui exited", "err", runErr)
 			runner.StopLoop()
 			close(done)
 		}()

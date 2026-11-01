@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -68,8 +69,6 @@ var (
 	selSharedApplication      = objc.RegisterName("sharedApplication")
 	selSetActivationPolicy    = objc.RegisterName("setActivationPolicy:")
 	selFinishLaunching        = objc.RegisterName("finishLaunching")
-	selRun                    = objc.RegisterName("run")
-	selStop                   = objc.RegisterName("stop:")
 	selSetNowPlayingInfo      = objc.RegisterName("setNowPlayingInfo:")
 	selSetPlaybackState       = objc.RegisterName("setPlaybackState:")
 	selSharedCommandCenter    = objc.RegisterName("sharedCommandCenter")
@@ -116,14 +115,20 @@ type darwinService struct {
 	art     objc.ID
 
 	updateBlock objc.Block
-	stopBlock   objc.Block
 	handlers    []objc.Block
 
 	// libSystem / CoreFoundation entry points for main-thread hops and shutdown.
-	mainQueue      uintptr
-	dispatchAsync  func(queue uintptr, block uintptr)
-	runLoopGetMain func() uintptr
-	runLoopStop    func(loop uintptr)
+	mainQueue        uintptr
+	dispatchAsync    func(queue uintptr, block uintptr)
+	runLoopGetMain   func() uintptr
+	runLoopStop      func(loop uintptr)
+	runLoopRunInMode func(mode uintptr, seconds float64, returnAfterSource uint8) int32
+	modeDefault      uintptr
+
+	// stopped is set by StopLoop and read by the loop in RunLoop. It is the
+	// only reliable way out: NSApplication.run ignores both -stop: and
+	// CFRunLoopStop when the app was started without NSApplicationMain.
+	stopped atomic.Bool
 
 	stopOnce sync.Once
 }
@@ -196,12 +201,27 @@ func (s *darwinService) load() error {
 	if err := resolveFunc(coreFoundation, "CFRunLoopStop", &s.runLoopStop); err != nil {
 		return fmt.Errorf("mediactl: resolve CFRunLoopStop: %w", err)
 	}
+	if err := resolveFunc(coreFoundation, "CFRunLoopRunInMode", &s.runLoopRunInMode); err != nil {
+		return fmt.Errorf("mediactl: resolve CFRunLoopRunInMode: %w", err)
+	}
+	// kCFRunLoopDefaultMode is an exported CFStringRef constant: the symbol
+	// address is a slot holding the string, the same indirection the now-playing
+	// keys use.
+	modeSymbol, err := purego.Dlsym(coreFoundation, "kCFRunLoopDefaultMode")
+	if err != nil {
+		return fmt.Errorf("mediactl: resolve default run loop mode: %w", err)
+	}
+	// Same indirection trick as resolveNowPlayingKeys: the symbol address points
+	// at a slot holding the CFStringRef, and going through a uintptr slot keeps
+	// the conversion free of `go vet` complaints.
+	var modeSlot unsafe.Pointer
+	*(*uintptr)(unsafe.Pointer(&modeSlot)) = modeSymbol
+	s.modeDefault = *(*uintptr)(modeSlot)
 
 	s.keys = resolveNowPlayingKeys(mediaPlayer)
 	// One block per purpose, kept alive for the life of the process: creating a
 	// block per tick would exhaust purego's callback budget.
 	s.updateBlock = objc.NewBlock(func(objc.Block) { s.apply() })
-	s.stopBlock = objc.NewBlock(func(objc.Block) { s.shutdown() })
 	return nil
 }
 
@@ -303,7 +323,7 @@ func (s *darwinService) Close() {
 
 // --- Runner ---------------------------------------------------------------
 
-// RunLoop installs the AppKit integration and blocks on the main run loop until
+// RunLoop installs the AppKit integration and pumps the main run loop until
 // StopLoop is called. It must run on the process main thread.
 func (s *darwinService) RunLoop() {
 	if s == nil {
@@ -330,20 +350,27 @@ func (s *darwinService) RunLoop() {
 	}
 	s.claimNowPlaying()
 	s.flush()
-	msg(app, selRun)
+
+	// Pump the loop by hand rather than calling NSApplication.run. -run does not
+	// return here: with no NSApplicationMain the app never enters the state
+	// -stop: and CFRunLoopStop expect, so quitting would hang the terminal and
+	// need a SIGKILL. Pumping the same loop in short slices keeps the main
+	// dispatch queue (remote commands, now-playing updates) serviced and makes
+	// shutdown bounded by one timeout.
+	for !s.stopped.Load() {
+		s.runLoopRunInMode(s.modeDefault, 0.2, 0)
+	}
+	s.shutdown()
 }
 
-// StopLoop unblocks RunLoop. The block runs on the main queue so NSApplication
-// is stopped from its own thread; the CoreFoundation call is a belt-and-braces
-// wake-up for the case where the block is never serviced.
+// StopLoop unblocks RunLoop. The flag is what actually ends the loop; the
+// CoreFoundation call only wakes it early so the exit is immediate.
 func (s *darwinService) StopLoop() {
 	if s == nil {
 		return
 	}
 	s.stopOnce.Do(func() {
-		if s.dispatchAsync != nil && s.stopBlock != 0 {
-			s.dispatchAsync(s.mainQueue, uintptr(s.stopBlock))
-		}
+		s.stopped.Store(true)
 		if s.runLoopStop != nil && s.runLoopGetMain != nil {
 			s.runLoopStop(s.runLoopGetMain())
 		}
@@ -581,17 +608,14 @@ func (s *darwinService) loadImage(path string) objc.ID {
 	return image
 }
 
-// shutdown clears the now-playing entry and stops NSApplication. It runs on the
-// main queue.
+// shutdown clears the now-playing entry. It runs on the main thread once the
+// run loop has returned.
 func (s *darwinService) shutdown() {
 	s.mu.Lock()
-	app, info := s.app, s.infoCenter
+	info := s.infoCenter
 	s.mu.Unlock()
 	if info != 0 {
 		msg(info, selSetNowPlayingInfo, objc.ID(0))
-	}
-	if app != 0 {
-		msg(app, selStop, objc.ID(0))
 	}
 }
 

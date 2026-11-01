@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/browserutils/kooky"
 )
 
 func TestParseProfileRef(t *testing.T) {
@@ -145,5 +147,44 @@ func TestFirefoxProfileDBs_MacLayout(t *testing.T) {
 		t.Errorf("macOS Firefox profile not found in %v", got)
 	} else if db.browser != "firefox" || db.profile != "abc.default-release" {
 		t.Errorf("macOS Firefox db = %+v", db)
+	}
+}
+
+// TestAddCookieKeepsOnlyYouTubeDomain pins the fix for the empty library bug:
+// .google.com and .youtube.com carry different values for SID, HSID, SSID and
+// the __Secure-*PSID chain, and a browser never sends both to one host. Mixing
+// them made YouTube treat the session as signed out.
+func TestAddCookieKeepsOnlyYouTubeDomain(t *testing.T) {
+	sets := [][]struct{ domain, name, value string }{
+		{
+			{".google.com", "SID", "google-sid"},
+			{"google.com", "NID", "google-only"},
+			{".youtube.com", "SID", "youtube-sid"},
+			{".example.com", "OTHER", "other"},
+		},
+		{
+			{".youtube.com", "SID", "youtube-sid"},
+			{".google.com", "SID", "google-sid"},
+		},
+	}
+
+	for i, set := range sets {
+		groups := map[groupKey]map[string]string{}
+		var order []groupKey
+		k := groupKey{browser: "zen", profile: "default"}
+		for _, c := range set {
+			// kooky.Cookie embeds http.Cookie, so the promoted fields cannot be
+			// set from a composite literal under the go1.26 language version.
+			ck := &kooky.Cookie{}
+			ck.Domain, ck.Name, ck.Value = c.domain, c.name, c.value
+			addCookie(groups, &order, k, ck)
+		}
+
+		if got, want := buildCookieHeader(groups[k]), "SID=youtube-sid"; got != want {
+			t.Errorf("set %d: header = %q, want %q", i, got, want)
+		}
+		if len(order) != 1 || order[0] != k {
+			t.Errorf("set %d: order = %v, want [%v]", i, order, k)
+		}
 	}
 }
