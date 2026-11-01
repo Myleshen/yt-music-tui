@@ -49,6 +49,13 @@ type MPV struct {
 	pending map[int64]chan ipcResponse
 	nextID  atomic.Int64
 
+	// seekMu guards the one-shot resume seek applied to the first loaded file.
+	// It is taken by the reader goroutine on file-loaded and cleared by
+	// LoadURL/Stop so it can never leak into a skip or a later load.
+	seekMu  sync.Mutex
+	seekPos float64
+	hasSeek bool
+
 	stateMu  sync.RWMutex
 	playing  bool
 	title    string
@@ -145,13 +152,13 @@ func (o StartOptions) Args() []string {
 	return args
 }
 
-// Start spawns mpv with the given stream URL and human-readable title.
-// startPos > 0 seeks to that many seconds into the track on start (for resume).
-// opts tunes mpv's audio pipeline (gapless, crossfade, normalisation).
-func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, error) {
-	// Clean up stale socket
-	os.Remove(sockPath)
-
+// startArgs builds mpv's command line.
+//
+// A resume position is deliberately NOT passed as --start: mpv treats that as a
+// per-file option and re-applies it to every subsequent loadfile, which would
+// make each skip/jump start mid-track. Instead the file is loaded paused and
+// handleEvent applies a one-shot absolute seek on file-loaded.
+func startArgs(streamURL, title string, startPos float64, opts StartOptions) []string {
 	args := []string{
 		"--no-video",
 		"--idle=yes",       // stay alive after track ends so socket remains open
@@ -166,11 +173,23 @@ func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, 
 		args = append(args, "--force-media-title="+title)
 	}
 	if startPos > 1 {
-		args = append(args, fmt.Sprintf("--start=%.0f", startPos))
+		args = append(args, "--pause=yes")
 	}
 	if streamURL != "" {
 		args = append(args, streamURL)
 	}
+	return args
+}
+
+// Start spawns mpv with the given stream URL and human-readable title.
+// startPos > 0 resumes that many seconds into the track: mpv is started paused
+// and a one-shot seek is applied once the file finishes loading. opts tunes
+// mpv's audio pipeline (gapless, crossfade, normalisation).
+func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, error) {
+	// Clean up stale socket
+	os.Remove(sockPath)
+
+	args := startArgs(streamURL, title, startPos, opts)
 
 	cmd := exec.Command("mpv", args...)
 	cmd.Stderr = os.Stderr
@@ -184,6 +203,10 @@ func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, 
 		cmd:     cmd,
 		pending: make(map[int64]chan ipcResponse),
 		done:    make(chan struct{}),
+	}
+	if startPos > 1 {
+		m.seekPos = startPos
+		m.hasSeek = true
 	}
 
 	// Wait for socket to appear (up to 3 seconds)
@@ -215,6 +238,13 @@ func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, 
 		m.observe(i+1, name)
 	}
 
+	// mpv opens the command-line file as soon as it starts, usually before the
+	// IPC socket above is accepted, so its file-loaded event can be missed.
+	// Apply a pending resume seek by polling instead of trusting that event.
+	if m.hasPendingSeek() {
+		go m.seekWhenLoaded()
+	}
+
 	return m, nil
 }
 
@@ -225,6 +255,9 @@ func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, 
 // would otherwise leave the new track paused. We explicitly unpause after the
 // load so every skip/jump starts playing; the user can re-pause afterwards.
 func (m *MPV) LoadURL(url, title string) error {
+	// A skip/jump supersedes an unapplied resume seek: clearing it keeps the
+	// new track at 0:00 instead of the old session's position.
+	m.clearPendingSeek()
 	if title != "" {
 		if err := m.setProperty("force-media-title", title); err != nil {
 			slog.Debug("mpv: set force-media-title failed", "err", err)
@@ -349,6 +382,7 @@ func (m *MPV) TakeFailed() bool {
 
 // Stop halts playback and unloads the current file, leaving mpv idle.
 func (m *MPV) Stop() error {
+	m.clearPendingSeek()
 	_, err := m.command("stop")
 	return err
 }
@@ -510,6 +544,13 @@ func (m *MPV) handleEvent(msg ipcResponse) {
 		// loaded track reads 0:00 instead of the previous track's position
 		// (which would otherwise stick, notably while paused).
 		m.resetTimeline()
+		if msg.Event == "file-loaded" {
+			if pos, ok := m.takePendingSeek(); ok {
+				// Run off the reader goroutine: command() waits for a reply that
+				// only this goroutine can deliver.
+				go m.seekAndResume(pos)
+			}
+		}
 	case "end-file":
 		// "eof" means the track genuinely finished; "error"/"unknown" mean mpv
 		// could not open or decode the stream (e.g. an expired URL 403s). Other
@@ -579,6 +620,66 @@ func (m *MPV) resetTimeline() {
 	m.position = 0
 	m.duration = 0
 	m.stateMu.Unlock()
+}
+
+// takePendingSeek returns and clears the one-shot resume position, if any.
+func (m *MPV) takePendingSeek() (float64, bool) {
+	m.seekMu.Lock()
+	defer m.seekMu.Unlock()
+	pos, ok := m.seekPos, m.hasSeek
+	m.seekPos = 0
+	m.hasSeek = false
+	return pos, ok
+}
+
+// clearPendingSeek drops a resume seek that has not been applied yet. A skip or
+// stop supersedes it, so it must never seek a track the user chose later.
+func (m *MPV) clearPendingSeek() {
+	_, _ = m.takePendingSeek()
+}
+
+// hasPendingSeek reports whether a resume seek is still waiting to be applied.
+func (m *MPV) hasPendingSeek() bool {
+	m.seekMu.Lock()
+	defer m.seekMu.Unlock()
+	return m.hasSeek
+}
+
+// seekWhenLoaded applies a pending resume seek once mpv reports a duration for
+// the file. It covers the startup case where the command-line file loads before
+// the IPC client connects and its file-loaded event is therefore lost.
+func (m *MPV) seekWhenLoaded() {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := m.command("get_property", "duration")
+		if err == nil {
+			var d float64
+			if json.Unmarshal(data, &d) == nil && d > 0 {
+				if pos, ok := m.takePendingSeek(); ok {
+					m.seekAndResume(pos)
+				}
+				return
+			}
+		}
+		select {
+		case <-m.done:
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	slog.Debug("mpv: resume seek abandoned, file never reported a duration")
+}
+
+// seekAndResume applies the resume position once the initial file has loaded
+// and then unpauses playback (Start loads resume tracks paused so the opening
+// bars are not audible before the seek lands).
+func (m *MPV) seekAndResume(pos float64) {
+	if _, err := m.command("seek", pos, "absolute"); err != nil {
+		slog.Debug("mpv: resume seek failed", "pos", pos, "err", err)
+	}
+	if err := m.setProperty("pause", false); err != nil {
+		slog.Debug("mpv: unpause after resume failed", "err", err)
+	}
 }
 
 // deliver routes a response to its waiter, if any. Buffered channels mean this

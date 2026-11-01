@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"log/slog"
-	"os/exec"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,32 +35,40 @@ func (m Model) pomodoroIndicator() string {
 	return icon + " " + pomodoro.Format(m.pomodoro.Remaining()) + "   "
 }
 
-// pomodoroCompletedCmds handles a phase rollover: a desktop notification plus
-// an OSD announcing the next phase.
+// pomodoroCompletedCmds handles a phase rollover. When a work phase ends the
+// music is paused so the break is quiet, then an OSD and a desktop notification
+// nudge the user to stand up and move.
 func (m *Model) pomodoroCompletedCmds(completed pomodoro.Phase) []tea.Cmd {
 	switch completed {
 	case pomodoro.Work:
-		notifyDesktop("Pomodoro", "Work session complete — time for a break")
-		return []tea.Cmd{m.showOSD("☕  break time — " + pomodoro.Format(m.pomodoro.Remaining()))}
+		if m.mpv != nil {
+			slog.Info("pomodoro: work complete — pausing playback")
+			if err := m.mpv.Pause(); err != nil {
+				slog.Debug("pomodoro: pause failed", "err", err)
+			}
+			// Reflect the pause immediately so the player bar, MPRIS, and
+			// Discord do not show a stale "playing" state until the next tick.
+			m.playerState.Playing = false
+		}
+		brk := pomodoro.Format(m.pomodoro.Remaining())
+		return []tea.Cmd{
+			m.showOSD("☕  break time — stand up & move  ·  " + brk),
+			m.notifyTextCmd(
+				"☕  Break time — stand up and move",
+				fmt.Sprintf("Nice work! Step away from the screen, stretch, and walk around for %s.", brk),
+			),
+		}
 	case pomodoro.Break:
-		notifyDesktop("Pomodoro", "Break over — back to work")
-		return []tea.Cmd{m.showOSD("🍅  work time — " + pomodoro.Format(m.pomodoro.Remaining()))}
+		work := pomodoro.Format(m.pomodoro.Remaining())
+		return []tea.Cmd{
+			m.showOSD("🍅  work time — " + work),
+			m.notifyTextCmd(
+				"🍅  Break over — back to work",
+				fmt.Sprintf("Break's done. Settle in for %s of focused work.", work),
+			),
+		}
 	}
 	return nil
-}
-
-// notifyDesktop sends a desktop notification via notify-send when it is
-// installed. It never blocks: the command runs in its own goroutine and any
-// failure is ignored (logged at debug).
-func notifyDesktop(summary, body string) {
-	if _, err := exec.LookPath("notify-send"); err != nil {
-		return
-	}
-	go func() {
-		if err := exec.Command("notify-send", "-a", "ytm", summary, body).Run(); err != nil {
-			slog.Debug("notify-send failed", "err", err)
-		}
-	}()
 }
 
 // trackItems converts tracks to list items for the bubbles list.

@@ -65,6 +65,9 @@ type fakeIPC struct {
 	ln   net.Listener
 	mu   sync.Mutex
 	cmds [][]interface{}
+	// props answers get_property requests; a missing name replies "success"
+	// with no data, matching mpv's unavailable-property behaviour.
+	props map[string]interface{}
 }
 
 func newFakeIPC(t *testing.T) *fakeIPC {
@@ -103,11 +106,22 @@ func (f *fakeIPC) handle(c net.Conn) {
 		}
 		f.mu.Lock()
 		f.cmds = append(f.cmds, req.Command)
+		var data interface{}
+		var hasData bool
+		if len(req.Command) >= 2 && req.Command[0] == "get_property" {
+			if name, ok := req.Command[1].(string); ok {
+				data, hasData = f.props[name]
+			}
+		}
 		f.mu.Unlock()
-		resp, _ := json.Marshal(map[string]interface{}{
+		body := map[string]interface{}{
 			"request_id": req.RequestID,
 			"error":      "success",
-		})
+		}
+		if hasData {
+			body["data"] = data
+		}
+		resp, _ := json.Marshal(body)
 		_, _ = c.Write(append(resp, '\n'))
 	}
 }
@@ -390,5 +404,136 @@ func TestGetStateIsCachedAndUpdates(t *testing.T) {
 	}
 	if m.IsAlive() {
 		t.Errorf("mpv still reported alive after Quit")
+	}
+}
+
+// TestStartArgsResumeAvoidsPersistentStart guards against the regression where
+// a resume position was passed as --start: mpv re-applies that per-file option
+// to every later loadfile, so every skip/jump started at the old position.
+func TestStartArgsResumeAvoidsPersistentStart(t *testing.T) {
+	old := sockPath
+	sockPath = "/tmp/ytm-test-mpv.sock"
+	t.Cleanup(func() { sockPath = old })
+
+	cases := []struct {
+		name      string
+		startPos  float64
+		wantPause bool
+	}{
+		{"fresh start", 0, false},
+		{"resume", 102, true},
+		{"sub-second resume ignored", 0.5, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			args := startArgs("http://example/stream", "Song", c.startPos, StartOptions{})
+			joined := strings.Join(args, "\n")
+			if strings.Contains(joined, "--start") {
+				t.Errorf("startArgs = %v, must not pass --start (it persists across loadfile)", args)
+			}
+			if got := strings.Contains(joined, "--pause=yes"); got != c.wantPause {
+				t.Errorf("startArgs pause = %v, want %v (args=%v)", got, c.wantPause, args)
+			}
+			if !strings.Contains(joined, "http://example/stream") || !strings.Contains(joined, "--force-media-title=Song") {
+				t.Errorf("startArgs = %v, missing URL or title", args)
+			}
+		})
+	}
+}
+
+// TestPendingSeekAppliedOnFileLoaded verifies a resume seek is issued exactly
+// once, when the initial file has loaded, and then playback is unpaused.
+// TestSeekWhenLoadedAppliesPendingSeek covers the startup race: mpv loads the
+// command-line file before the IPC client connects, so the file-loaded event is
+// lost and the resume seek must be triggered by polling the duration instead.
+func TestSeekWhenLoadedAppliesPendingSeek(t *testing.T) {
+	f := newFakeIPC(t)
+	f.mu.Lock()
+	f.props = map[string]interface{}{"duration": 40.0}
+	f.mu.Unlock()
+
+	conn, err := net.Dial("unix", f.path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	m := &MPV{conn: conn, pending: make(map[int64]chan ipcResponse), done: make(chan struct{})}
+	go m.readLoop()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	m.seekPos, m.hasSeek = 42, true
+	go m.seekWhenLoaded()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.hasCommand("seek", float64(42), "absolute") && f.hasCommand("set_property", "pause", false) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !f.hasCommand("seek", float64(42), "absolute") {
+		t.Errorf("expected absolute seek to 42; got %v", f.commands())
+	}
+	if !f.hasCommand("set_property", "pause", false) {
+		t.Errorf("expected playback to resume; got %v", f.commands())
+	}
+	if _, ok := m.takePendingSeek(); ok {
+		t.Error("pending seek must be consumed after it is applied")
+	}
+}
+
+func TestPendingSeekAppliedOnFileLoaded(t *testing.T) {
+	f := newFakeIPC(t)
+	conn, err := net.Dial("unix", f.path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	m := &MPV{conn: conn, pending: make(map[int64]chan ipcResponse), done: make(chan struct{})}
+	go m.readLoop()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	m.seekPos, m.hasSeek = 42, true
+	m.handleLine([]byte(`{"event":"file-loaded"}`))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.hasCommand("seek", float64(42), "absolute") && f.hasCommand("set_property", "pause", false) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !f.hasCommand("seek", float64(42), "absolute") {
+		t.Errorf("expected absolute seek to 42; got %v", f.commands())
+	}
+	if !f.hasCommand("set_property", "pause", false) {
+		t.Errorf("expected playback to resume; got %v", f.commands())
+	}
+	if _, ok := m.takePendingSeek(); ok {
+		t.Error("pending seek must be consumed, not re-applied on the next file")
+	}
+}
+
+// TestLoadURLClearsPendingSeek ensures a skip before the resume seek lands
+// cannot seek the newly chosen track to the old session's position.
+func TestLoadURLClearsPendingSeek(t *testing.T) {
+	f := newFakeIPC(t)
+	conn, err := net.Dial("unix", f.path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	m := &MPV{conn: conn, pending: make(map[int64]chan ipcResponse), done: make(chan struct{})}
+	go m.readLoop()
+	t.Cleanup(func() { _ = conn.Close() })
+
+	m.seekPos, m.hasSeek = 102, true
+	if err := m.LoadURL("http://example/other", "Other"); err != nil {
+		t.Fatalf("LoadURL: %v", err)
+	}
+	if _, ok := m.takePendingSeek(); ok {
+		t.Fatal("LoadURL must clear the pending resume seek")
+	}
+	m.handleLine([]byte(`{"event":"file-loaded"}`))
+	time.Sleep(100 * time.Millisecond)
+	if f.hasCommand("seek", float64(102), "absolute") {
+		t.Errorf("a skip must not seek the new track to the old position; got %v", f.commands())
 	}
 }

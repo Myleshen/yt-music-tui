@@ -149,8 +149,9 @@ Recognised `[keys]` action names: `up`, `down`, `tab0`–`tab4`, `home`,
 ### Pomodoro
 
 Press `P` to start/stop. The countdown shows in the player bar
-(`🍅 24:59` / `☕ 04:30`), cycles work → break → work, and raises a
-`notify-send` desktop notification when each phase ends.
+(`🍅 24:59` / `☕ 04:30`) and cycles work → break → work. When a work phase
+ends, playback pauses and a desktop notification nudges you to stand up and
+move; when the break ends it notifies you to get back to work.
 
 ### Cold start
 
