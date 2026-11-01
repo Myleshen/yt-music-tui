@@ -6,10 +6,19 @@
 package logger
 
 import (
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 )
+
+// logWriter is where output that must not reach the terminal goes. Subprocesses
+// such as mpv inherit it: the TUI owns the terminal, so anything they print
+// would scribble over the frame bubbletea is maintaining.
+var logWriter io.Writer = os.Stderr
+
+// Writer returns the destination for output that must not reach the terminal.
+func Writer() io.Writer { return logWriter }
 
 // Init opens (or creates) the log file and sets it as the default slog handler.
 // It returns a close function that must be called on shutdown (defer it in main).
@@ -39,6 +48,7 @@ func Init() (close func(), err error) {
 		ReplaceAttr: redactSensitive,
 	})
 	slog.SetDefault(slog.New(handler))
+	logWriter = f
 	slog.Info("ytm starting", "log", logPath)
 
 	return func() { f.Close() }, nil

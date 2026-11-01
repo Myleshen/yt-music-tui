@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Myleshen/yt-music-tui/internal/logger"
 )
 
 // sockPath is the unix socket mpv exposes its JSON IPC on. It is a var so tests
@@ -211,7 +213,9 @@ func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, 
 	args := startArgs(streamURL, title, startPos, opts)
 
 	cmd := exec.Command("mpv", args...)
-	cmd.Stderr = os.Stderr
+	// mpv must not write to the terminal: it would paint over the TUI. Route
+	// its diagnostics to the log file instead.
+	cmd.Stderr = logger.Writer()
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("mpv not found or failed to start: %w", err)

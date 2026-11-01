@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Myleshen/yt-music-tui/internal/config"
 	"github.com/Myleshen/yt-music-tui/internal/discordrpc"
@@ -646,9 +647,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
+		resized := msg.Width != m.width || msg.Height != m.height
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeLists()
+		// A resize is the one event that can leave stale characters on screen:
+		// the terminal scrolls when the previous frame was taller than the new
+		// window, and bubbletea then repaints only the lines whose content
+		// changed, so the leftovers survive frame after frame. Wiping the
+		// screen makes the next frame start from a known state.
+		if resized {
+			cmds = append(cmds, tea.ClearScreen)
+		}
 		// Art is rasterised at a specific width; on resize re-render it.
 		if t, ok := m.currentTrack(); ok {
 			if cmd := m.albumArtCmd(t); cmd != nil {
@@ -2589,44 +2599,78 @@ func artPlaceholder(cols, rows int) string {
 }
 
 // clip truncates s to at most width display cells, adding an ellipsis.
+//
+// Width is measured with ansi.StringWidth rather than counting runes: the
+// terminal gives wide characters (CJK, emoji) two cells and combining marks
+// none, and a line that is wider than the column it belongs to wraps, pushing
+// every following row down.
 func clip(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= width {
+	if ansi.StringWidth(s) <= width {
 		return s
 	}
-	r := []rune(s)
-	if len(r) > width-1 {
-		r = r[:width-1]
+	if width == 1 {
+		return "…"
 	}
-	return string(r) + "…"
+	return ansi.Truncate(s, width, "…")
+}
+
+// fitFrame forces s to exactly width cells wide and height lines tall,
+// truncating and padding as needed.
+//
+// bubbletea repaints by moving the cursor up over the lines it wrote last
+// time, so the frame must never be taller than the terminal: a terminal that
+// scrolls shifts every line, and the next frame lands one row off, leaving the
+// previous frame's remains visible in a jumble. Extra lines are dropped from
+// the bottom, which keeps the header (tabs, now-playing bar) in place for as
+// long as the terminal has room for it.
+func fitFrame(s string, width, height int) string {
+	if width < 1 || height < 1 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	out := make([]string, 0, height)
+	for _, line := range lines {
+		if ansi.StringWidth(line) > width {
+			line = ansi.Truncate(line, width, "")
+		}
+		out = append(out, line)
+	}
+	for len(out) < height {
+		out = append(out, "")
+	}
+	return strings.Join(out, "\n")
 }
 
 // --- View ---
 
 func (m Model) View() string {
-	if m.paletteOpen {
-		return m.paletteView()
+	var v string
+	switch {
+	case m.paletteOpen:
+		v = m.paletteView()
+	case m.showHelp:
+		v = m.helpView()
+	case m.sleepMode:
+		v = m.sleepMenuView()
+	default:
+		header := m.headerView()
+		playerBar := m.playerBarView()
+		headerH := lipgloss.Height(header)
+		playerH := lipgloss.Height(playerBar)
+		contentH := m.height - headerH - playerH
+		if contentH < 1 {
+			contentH = 1
+		}
+		content := fitFrame(m.contentView(contentH), m.width, contentH)
+		v = lipgloss.JoinVertical(lipgloss.Left, header, content, playerBar)
 	}
-	if m.showHelp {
-		return m.helpView()
-	}
-	if m.sleepMode {
-		return m.sleepMenuView()
-	}
-
-	header := m.headerView()
-	playerBar := m.playerBarView()
-	headerH := lipgloss.Height(header)
-	playerH := lipgloss.Height(playerBar)
-	contentH := m.height - headerH - playerH
-	if contentH < 1 {
-		contentH = 1
-	}
-
-	content := m.contentView(contentH)
-	return lipgloss.JoinVertical(lipgloss.Left, header, content, playerBar)
+	return fitFrame(v, m.width, m.height)
 }
 
 func (m Model) headerView() string {
@@ -3002,10 +3046,19 @@ func (m Model) nowPlayingView(height int) string {
 	wide := m.width >= upNextMinWidth
 
 	var artBlock string
-	artCols := 0
+	artCols, artRows := 0, 0
 	if wide {
-		var artRows int
 		artCols, artRows = artSize(m.width, 1, 1)
+		// Square art is the tallest grid artSize produces (artMaxRows), so an
+		// image that fits here is the worst case. On a short terminal — a
+		// drop-down window, a split pane — there is no room for it: drop the
+		// art instead of letting the column grow past the frame, which would
+		// scroll the terminal and desynchronise the whole layout.
+		if artRows > height-2 {
+			artCols, artRows = 0, 0
+		}
+	}
+	if artCols > 0 {
 		if art, _ := m.currentArt(); art != "" {
 			artBlock = art
 		} else {
@@ -3084,12 +3137,26 @@ func indentLeft(s string, n int) string {
 }
 
 // padBlock pads every line of s to exactly width display cells and appends
-// blank lines until the block is `height` lines tall. This keeps side-by-side
-// columns aligned with consistent gutters independent of their content.
+// blank lines until the block is `height` lines tall, dropping lines that do
+// not fit. This keeps side-by-side columns aligned with consistent gutters
+// independent of their content, and makes it impossible for one column to
+// stretch the row beyond the terminal.
 func padBlock(s string, width, height int) string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
 	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
 	for i, line := range lines {
-		if w := lipgloss.Width(line); w < width {
+		switch w := ansi.StringWidth(line); {
+		case w > width:
+			lines[i] = ansi.Truncate(line, width, "")
+		case w < width:
 			lines[i] = line + strings.Repeat(" ", width-w)
 		}
 	}
@@ -3249,18 +3316,24 @@ func (m Model) upNextPanel(width, height int) string {
 	}
 	upcoming := m.queue.UpcomingCount()
 
-	// Reserve the header line and one blank spacer; the rest is the list, with
-	// one row always held for the current track.
-	avail := height - 2
+	// The panel is exactly `height` lines: a header, a blank spacer, the current
+	// track, the upcoming rows, and — when they do not all fit — a "… N more"
+	// hint. Emitting one line too many used to overflow the frame, which made
+	// the terminal scroll and desynchronised the whole screen.
+	if height < 1 {
+		height = 1
+	}
+	avail := height - 3
 	if avail < 1 {
 		avail = 1
 	}
-	listRows := avail - 1
-	if listRows < 1 {
-		listRows = 1
-	}
+	listRows := avail
 	if listRows > maxUpNextRows {
 		listRows = maxUpNextRows
+	}
+	// Reserve a line for the hint when the window cannot show everything.
+	if upcoming > listRows && listRows > 1 {
+		listRows--
 	}
 
 	// Keep the selected row inside the window.
@@ -3309,6 +3382,9 @@ func (m Model) upNextPanel(width, height int) string {
 	if last < upcoming {
 		lines = append(lines, styleMuted.Render(fmt.Sprintf("   … %d more", upcoming-last)))
 	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -3350,6 +3426,13 @@ func (m Model) lyricsPanel(width, height int) string {
 	}
 	start := m.lyricsStart(avail, active)
 	end := minInt(len(m.lyrics), start+avail)
+	// Keep the panel within its budget: when more lines remain they get a hint
+	// line of their own, so the window loses one row to make room for it.
+	if end < len(m.lyrics) && avail > 1 {
+		avail--
+		start = m.lyricsStart(avail, active)
+		end = minInt(len(m.lyrics), start+avail)
+	}
 
 	lines := []string{header, ""}
 	for i := start; i < end; i++ {
@@ -3357,6 +3440,9 @@ func (m Model) lyricsPanel(width, height int) string {
 	}
 	if end < len(m.lyrics) {
 		lines = append(lines, styleMuted.Render(fmt.Sprintf("…  %d more lines", len(m.lyrics)-end)))
+	}
+	if len(lines) > height {
+		lines = lines[:height]
 	}
 	return strings.Join(lines, "\n")
 }
@@ -3421,6 +3507,10 @@ func (m Model) lyricsViewportRows() int {
 	if avail < 1 {
 		avail = 1
 	}
+	// lyricsPanel spends one of those rows on the "… N more lines" hint.
+	if len(m.lyrics) > avail && avail > 1 {
+		avail--
+	}
 	return avail
 }
 
@@ -3445,15 +3535,19 @@ func (m *Model) scrollLyrics(delta int) {
 	}
 }
 
-// vertCenter pads content with blank lines to center it vertically.
+// vertCenter pads content with blank lines to center it vertically, trimming
+// lines off the bottom when the content is taller than the space available.
 func vertCenter(content string, height int) string {
-	contentH := strings.Count(content, "\n") + 1
-	pad := (height - contentH) / 2
-	if pad < 0 {
-		pad = 0
+	if height < 1 {
+		height = 1
 	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	pad := (height - len(lines)) / 2
 	top := strings.Repeat("\n", pad)
-	return top + content
+	return top + strings.Join(lines, "\n")
 }
 
 // mediaTitle formats a track's display title for mpv/MPRIS: "Title - Artist".
