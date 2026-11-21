@@ -1,6 +1,6 @@
 module github.com/Myleshen/yt-music-tui
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -12,7 +12,7 @@ require (
 	github.com/ebitengine/purego v0.11.3
 	github.com/godbus/dbus/v5 v5.2.2
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/image v0.25.0
+	golang.org/x/image v0.48.0
 )
 
 require (
@@ -40,8 +40,8 @@ require (
 	github.com/zalando/go-keyring v0.2.7 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	gopkg.in/ini.v1 v1.67.1 // indirect
 )
