@@ -8,6 +8,12 @@ Playback uses `mpv` (with `yt-dlp` for stream extraction).
 > The Python `ytmusicapi` bridge has been replaced with a native Go InnerTube
 > client. See "What changed".
 
+```sh
+brew install mpv yt-dlp
+git clone https://github.com/Myleshen/yt-music-tui
+cd yt-music-tui && make macos
+```
+
 ## Features
 
 - **Search** YouTube Music by song
