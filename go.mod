@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/charmbracelet/x/ansi v0.4.5
 	github.com/ebitengine/purego v0.11.3
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.4
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/image v0.48.0
 )
