@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"go.etcd.io/bbolt/errors"
 
 	"github.com/Myleshen/yt-music-tui/internal/stats"
 	"github.com/Myleshen/yt-music-tui/internal/ytmusic"
@@ -88,7 +89,7 @@ func Open(path string) (*Store, error) {
 		}
 		return nil
 	}); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
@@ -114,7 +115,7 @@ func (s *Store) GetURL(videoID string) (URLEntry, bool) {
 	err := s.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket(bucketURLs).Get([]byte(videoID))
 		if v == nil {
-			return bolt.ErrBucketNotFound
+			return errors.ErrBucketNotFound
 		}
 		return json.Unmarshal(v, &e)
 	})
@@ -167,7 +168,7 @@ func (s *Store) LoadLastPlaying() (LastPlayingState, bool) {
 	err := s.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket(bucketState).Get(keyLast)
 		if v == nil {
-			return bolt.ErrBucketNotFound
+			return errors.ErrBucketNotFound
 		}
 		return json.Unmarshal(v, &state)
 	})
@@ -210,7 +211,7 @@ func loadMeta[T any](s *Store, key []byte) (T, time.Time, bool) {
 	err := s.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket(bucketMeta).Get(key)
 		if v == nil {
-			return bolt.ErrBucketNotFound
+			return errors.ErrBucketNotFound
 		}
 		return json.Unmarshal(v, &env)
 	})

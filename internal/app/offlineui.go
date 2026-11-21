@@ -118,11 +118,11 @@ func (m Model) statsView(height int) string {
 
 	var b strings.Builder
 	b.WriteString(title + "\n" + sub + "\n\n")
-	b.WriteString(fmt.Sprintf("  %s   %s   %s   %s\n\n",
+	fmt.Fprintf(&b, "  %s   %s   %s   %s\n\n",
 		statCard(accent, "plays", fmt.Sprintf("%d", s.TotalPlays)),
 		statCard(accent, "minutes", fmt.Sprintf("%d", stats.Minutes(s.TotalSeconds))),
 		statCard(accent, "days", fmt.Sprintf("%d", s.ListeningDays)),
-		statCard(accent, "streak", fmt.Sprintf("%d 🔥", s.StreakDays))))
+		statCard(accent, "streak", fmt.Sprintf("%d 🔥", s.StreakDays)))
 
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colText).Render("  Top artists") + "\n")
 	b.WriteString(leaderboard(s.TopArtists, 26) + "\n")

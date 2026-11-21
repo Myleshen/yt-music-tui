@@ -208,7 +208,7 @@ func startArgs(streamURL, title string, startPos float64, opts StartOptions) []s
 // mpv's audio pipeline (gapless, crossfade, normalisation).
 func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, error) {
 	// Clean up stale socket
-	os.Remove(sockPath)
+	_ = os.Remove(sockPath)
 
 	args := startArgs(streamURL, title, startPos, opts)
 
@@ -243,7 +243,7 @@ func Start(streamURL, title string, startPos float64, opts StartOptions) (*MPV, 
 		}
 	}
 	if conn == nil {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		slog.Error("mpv socket did not appear", "sock", sockPath)
 		return nil, fmt.Errorf("mpv socket did not appear at %s", sockPath)
 	}
@@ -414,12 +414,12 @@ func (m *MPV) Stop() error {
 func (m *MPV) Quit() {
 	m.closeOnce.Do(func() {
 		slog.Debug("mpv quit")
-		m.command("quit")
+		_, _ = m.command("quit")
 		if m.conn != nil {
-			m.conn.Close()
+			_ = m.conn.Close()
 		}
 		if m.cmd != nil && m.cmd.Process != nil {
-			m.cmd.Process.Kill()
+			_ = m.cmd.Process.Kill()
 		}
 	})
 }
@@ -530,7 +530,7 @@ func (m *MPV) waitLoop() {
 	m.exited.Store(true)
 	slog.Debug("mpv process exited", "err", err)
 	if m.conn != nil {
-		m.conn.Close()
+		_ = m.conn.Close()
 	}
 }
 

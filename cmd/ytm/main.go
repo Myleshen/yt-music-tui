@@ -212,7 +212,7 @@ func runTUI() {
 		st = nil
 	} else {
 		slog.Info("state DB opened", "path", store.DefaultPath())
-		defer st.Close()
+		defer func() { _ = st.Close() }()
 	}
 
 	// Build URL cache — warm it from the DB. When the DB could not be opened

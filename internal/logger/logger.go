@@ -51,7 +51,7 @@ func Init() (close func(), err error) {
 	logWriter = f
 	slog.Info("ytm starting", "log", logPath)
 
-	return func() { f.Close() }, nil
+	return func() { _ = f.Close() }, nil
 }
 
 // sensitiveKeys are log attribute keys whose values are always redacted.

@@ -1227,7 +1227,7 @@ func (m Model) updateNormalMode(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.
 	case key.Matches(msg, m.keys.Loop):
 		if m.mpv != nil {
 			m.looping = !m.looping
-			m.mpv.SetLoop(m.looping)
+			_ = m.mpv.SetLoop(m.looping)
 			if m.looping {
 				cmds = append(cmds, m.showOSD("↺  loop on"))
 			} else {
@@ -1485,7 +1485,7 @@ func (m Model) updateNormalMode(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.
 				return m.startPlayback(rs.Tracks, rs.Index, rs.FromPlaylist, rs.Position, rs.Shuffle, rs.Order)
 			})
 		} else if m.mpv != nil {
-			m.mpv.PlayPause()
+			_ = m.mpv.PlayPause()
 			if m.playerState.Playing {
 				cmds = append(cmds, m.showOSD("⏸  paused"))
 			} else {
@@ -1510,28 +1510,28 @@ func (m Model) updateNormalMode(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.
 	case key.Matches(msg, m.keys.VolumeUp):
 		if m.mpv != nil {
 			step := m.volumeStepOr()
-			m.mpv.VolumeBy(step)
+			_ = m.mpv.VolumeBy(step)
 			cmds = append(cmds, m.showVolumeOSD(minInt(100, m.playerState.Volume+step)))
 		}
 
 	case key.Matches(msg, m.keys.VolumeDown):
 		if m.mpv != nil {
 			step := m.volumeStepOr()
-			m.mpv.VolumeBy(-step)
+			_ = m.mpv.VolumeBy(-step)
 			cmds = append(cmds, m.showVolumeOSD(maxInt(0, m.playerState.Volume-step)))
 		}
 
 	case key.Matches(msg, m.keys.SeekFwd):
 		if m.mpv != nil {
 			step := m.seekStepOr()
-			m.mpv.Seek(float64(step))
+			_ = m.mpv.Seek(float64(step))
 			cmds = append(cmds, m.showOSD(fmt.Sprintf("⏩  +%ds", step)))
 		}
 
 	case key.Matches(msg, m.keys.SeekBack):
 		if m.mpv != nil {
 			step := m.seekStepOr()
-			m.mpv.Seek(-float64(step))
+			_ = m.mpv.Seek(-float64(step))
 			cmds = append(cmds, m.showOSD(fmt.Sprintf("⏪  −%ds", step)))
 		}
 	}
@@ -2134,17 +2134,17 @@ func (m *Model) handleMPRISCommand(cmd mediactl.Command) []tea.Cmd {
 	switch cmd.Action {
 	case mediactl.ActionPlay:
 		if m.mpv != nil {
-			m.mpv.Play()
+			_ = m.mpv.Play()
 		} else if m.resumeState != nil {
 			cmds = append(cmds, m.resumeCmd())
 		}
 	case mediactl.ActionPause:
 		if m.mpv != nil {
-			m.mpv.Pause()
+			_ = m.mpv.Pause()
 		}
 	case mediactl.ActionPlayPause:
 		if m.mpv != nil {
-			m.mpv.PlayPause()
+			_ = m.mpv.PlayPause()
 		} else if m.resumeState != nil {
 			cmds = append(cmds, m.resumeCmd())
 		}

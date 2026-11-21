@@ -58,7 +58,7 @@ func ExportM3U(path string, tracks []ytmusic.Track) error {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	for _, t := range tracks {
-		b.WriteString(fmt.Sprintf("#EXTINF:%d,%s\n", durationSeconds(t.Duration), extinfLabel(t)))
+		fmt.Fprintf(&b, "#EXTINF:%d,%s\n", durationSeconds(t.Duration), extinfLabel(t))
 		b.WriteString(trackLocation(t))
 		b.WriteString("\n")
 	}
@@ -74,7 +74,7 @@ func ExportCSV(path string, tracks []ytmusic.Track) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w := csv.NewWriter(f)
 	if err := w.Write([]string{"videoId", "title", "artist", "album", "duration", "url"}); err != nil {
 		return err

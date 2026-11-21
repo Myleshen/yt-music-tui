@@ -230,7 +230,7 @@ func (c *Client) request(endpoint string, body map[string]any) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

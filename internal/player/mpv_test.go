@@ -97,7 +97,7 @@ func (f *fakeIPC) serve() {
 }
 
 func (f *fakeIPC) handle(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	sc := bufio.NewScanner(c)
 	for sc.Scan() {
 		var req struct {

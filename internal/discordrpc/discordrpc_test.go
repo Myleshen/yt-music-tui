@@ -17,7 +17,7 @@ func TestClientHandshakeAndActivity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	origPaths := socketPaths
 	socketPaths = func() []string { return []string{path} }
@@ -33,7 +33,7 @@ func TestClientHandshakeAndActivity(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			op, p, err := readFrame(conn)
 			if err != nil {

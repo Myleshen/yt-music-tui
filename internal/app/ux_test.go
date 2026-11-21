@@ -97,7 +97,7 @@ func TestWindowRange(t *testing.T) {
 	if s, e := windowRange(0, 3, 5); s != 0 || e != 3 {
 		t.Errorf("all-visible = (%d,%d), want (0,3)", s, e)
 	}
-	if s, e := windowRange(10, 20, 5); e-s != 5 || !(s <= 10 && 10 < e) {
+	if s, e := windowRange(10, 20, 5); e-s != 5 || s > 10 || 10 >= e {
 		t.Errorf("cursor must stay in window: (%d,%d)", s, e)
 	}
 	if s, _ := windowRange(0, 20, 5); s != 0 {
